@@ -24,29 +24,29 @@ Example:
 
 If the following directory structure was used
 
-└── images
-    └── site_name_1
-        └── YYYY-MM-DD
-            ├── high_fly
-            │   └── IMG_0001.jpg
-            ├── module_scan
-            │   ├── 100MEDIA
-            │   │   ├── IMG_0001.jpg
-            │   │   ├── ...
-            │   │   └── IMG_0999.jpg
-            │   └── 101MEDIA
-            │       ├── IMG_0001.jpg
-            │       ├── ...
-            │       └── IMG_0999.jpg
-            └── pads_poi
-                └── IMG_0001.jpg
-    └── site_name_2
-        └── YYYY-MM-DD
-            ├── high_fly
-            ├── module_scan
-            │   ├── 100MEDIA
-            │   └── 101MEDIA
-            └── pads_poi
+-- images
+    -- site_name_1
+        -- YYYY-MM-DD
+            -- high_fly
+               -- IMG_0001.jpg
+            -- module_scan
+               -- 100MEDIA
+                  -- IMG_0001.jpg
+                  -- ...
+                   -- IMG_0999.jpg
+               -- 101MEDIA
+                   -- IMG_0001.jpg
+                   -- ...
+                   -- IMG_0999.jpg
+            -- pads_poi
+                -- IMG_0001.jpg
+    -- site_name_2
+        -- YYYY-MM-DD
+            -- high_fly
+            -- module_scan
+               -- 100MEDIA
+               -- 101MEDIA
+            -- pads_poi
 
 This script would create 2 upload requests: one for site 1 and one for site 2.
 It would then create 5 upload sessions for site 1 and 4 for site 2.
