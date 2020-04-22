@@ -56,7 +56,6 @@ It is best practice to create one Upload Request per solar site. See main(), but
 get_solar_site_dirs() and get_upload_session_dirs() can be modified if needed.
 """
 
-__author__ = "eddie"
 __copyright__ = "Raptor Maps Inc. 2020 (c)"
 
 import argparse
