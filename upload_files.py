@@ -92,6 +92,7 @@ def login(server_path, email, password):
             cookie = {c.name: c.value}
 
     response = r.json()
+
     auth_token = response["response"]["user"]["authentication_token"]
 
     return cookie, auth_token
@@ -258,9 +259,11 @@ class UploadSession(object):
         endpoint = "/api/v2/token/%s/upload_file" % (self.access_token)
         url = BASE_URL + endpoint
 
+        s3_url = post['fields']['key']
+
         payload = {
             'upload_session_id': self.upload_session_id,
-            's3_url': post['url'],
+            's3_url': s3_url,
             'data_type': 'image' # or geotiff
         }
 
@@ -530,7 +533,7 @@ def main():
     #auth_token = 'abcd-1234'
 
     # Option 3: Log user into the API
-    #email = getpass.getuser()
+    #email = getpass.getpass('Email: ')
     #password = getpass.getpass()
     #cookie, auth_token = login(BASE_URL, email, password)
     ### END AUTHENTICATION ###
