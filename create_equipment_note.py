@@ -18,11 +18,13 @@ __copyright__ = "Raptor Maps Inc. 2023 (c)"
 
 import json
 import os
-import requests
 import sys
+
+import requests
 
 RM_API = 'https://api.raptormaps.com'
 RM_LEGACY_API = 'https://app-legacy.raptormaps.com'
+
 
 def main():
 
@@ -65,13 +67,13 @@ def main():
 
         api_access_token = response_data.get('access_token')
 
-        print(f'Store this secret api token in your env variables: {api_access_token}')
+        print(
+            f'Store this secret api token in your env variables: {api_access_token}')
         sys.exit()
-
 
     # Get information about the file to upload
     filename = os.path.basename(filepath)
-    filesize = os.path.getsize(filepath) # in bytes
+    filesize = os.path.getsize(filepath)  # in bytes
 
     # Setup header for API requests
     headers = {
@@ -153,6 +155,7 @@ def main():
         print(f'Congrats! {filename} is associated to object id {object_id}!')
     else:
         print('Error: Note files status code: {note_files_resp.status_code}')
+
 
 if __name__ == '__main__':
     main()

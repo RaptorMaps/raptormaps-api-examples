@@ -56,46 +56,37 @@ It is best practice to create one Upload Request per solar site. See main(), but
 get_solar_site_dirs() and get_upload_session_dirs() can be modified if needed.
 """
 
-__copyright__ = "Raptor Maps Inc. 2020 (c)"
+__copyright__ = "Raptor Maps Inc. 2025 (c)"
 
 import argparse
 import concurrent.futures
-import getpass
 import glob
 import json
 import os
-import requests
 import time
 
+import requests
+
 BASE_URL = "https://app.raptormaps.com"
+env_vars = os.getenv()
 
-def login(server_path, email, password):
-    """Generic login function. Returns cookie and auth token for Raptor Maps
-    Arguments:
-        server_path (str): e.g. https://app.raptormaps.com
-        email (str): e.g. gavinbelson@raptormaps.com
-        password (str): e.g. 123456789
-    Returns:
-        {session: (hashed_session_string)}, <auth_token> (str)
-    """
 
-    data = {"email":str(email),"password":str(password)}
+def get_bearer_token(client_secret, client_id):
+    url = 'https://api.raptormaps.com/oauth/token'
+    headers = {'content-type': 'application/json'}
+    body = {
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'audience': 'api://customer-api'}
 
-    login_path = server_path + '/login'
-    headers = {"Content-Type": "application/json"}
+    token_response = httpx.post(
+        url,
+        headers=headers,
+        data=json.dumps(body))
 
-    r = requests.post(login_path, headers=headers, data=json.dumps(data))
+    response_data = token_response.json()
+    return response_data.get('access_token')
 
-    # find the session cookie
-    for c in r.cookies:
-        if c.name == 'session':
-            cookie = {c.name: c.value}
-
-    response = r.json()
-
-    auth_token = response["response"]["user"]["authentication_token"]
-
-    return cookie, auth_token
 
 class UploadRequest(object):
     """UploadRequest class handles creating an upload request with the
@@ -132,7 +123,8 @@ class UploadRequest(object):
         data = r.json()
 
         # Get the access token for the upload request
-        access_token = data['upload_request']['access_token']['access_token']
+        access_token = get_bearer_token(
+            env_vars['CLIENT_SECRET'], env_vars['CLIENT_ID'])
 
         return access_token
 
@@ -141,6 +133,7 @@ class UploadSession(object):
     """UploadSession class handles creating an upload session with the
     Raptor Maps API and uploading files to AWS S3
     """
+
     def __init__(
             self, file_dir, session_name, org_id, access_token, n_workers=6):
         """Constructor.
@@ -213,7 +206,7 @@ class UploadSession(object):
         """
         # Get count of all files recursively in all subdirectories
         total_files = 0
-        for root,d_names,f_names in os.walk(file_dir):
+        for root, d_names, f_names in os.walk(file_dir):
             total_files += len(UploadSession.get_filepaths(root))
 
         return total_files
@@ -264,7 +257,7 @@ class UploadSession(object):
         payload = {
             'upload_session_id': self.upload_session_id,
             's3_url': s3_url,
-            'data_type': 'image' # or geotiff
+            'data_type': 'image'  # or geotiff
         }
 
         # POST
@@ -275,7 +268,6 @@ class UploadSession(object):
             os.path.basename(filepath)))
 
         self.counter += 1
-
 
     def post_file_to_s3(self, filepath, post, retry_period=10, retry_duration=7200):
         """Uploads a single file to AWS S3. If the post is unsuccessful
@@ -323,8 +315,8 @@ class UploadSession(object):
                     self.upload_file, x): x for x in self.filepaths}
 
             for future in concurrent.futures.as_completed(future_to_url):
-                url = future_to_url[future] # object originally passed
-                data = future.result() # get data from function
+                url = future_to_url[future]  # object originally passed
+                data = future.result()  # get data from function
 
     def create_upload_session(self):
         """Creates an upload session in Raptor Maps API
@@ -348,7 +340,8 @@ class UploadSession(object):
         try:
             data = r.json()
         except ValueError:
-            r = requests.post(url, data=json.dumps(payload), headers=self.headers)
+            r = requests.post(url, data=json.dumps(
+                payload), headers=self.headers)
             data = r.json()
 
         # Sets the session id
@@ -406,8 +399,8 @@ def get_solar_site_dirs(file_dir):
         if not os.path.exists(site_dir):
             raise OSError(site_dir, 'does not exist')
 
-
     return site_dirs, site_names
+
 
 def get_upload_session_dirs(image_dir, prefix=''):
     """Takes a directory that contains images or images within subdirectories
@@ -453,7 +446,7 @@ def get_upload_session_dirs(image_dir, prefix=''):
 
     # Recursively traverse the entire directory and flatten the lowest folders
     # into upload session names
-    for root,d_names,f_names in os.walk(image_dir):
+    for root, d_names, f_names in os.walk(image_dir):
 
         filepaths = UploadSession.get_filepaths(root)
 
@@ -487,13 +480,15 @@ def get_upload_session_dirs(image_dir, prefix=''):
 
     return file_dirs, session_names, total_file_count
 
+
 def parse_args():
     # Create argument parser
     parser = argparse.ArgumentParser()
 
     # positional mandatory arguments
     parser.add_argument("org_id", help="Your Raptor App org id", type=int)
-    parser.add_argument("image_dir", help="Path to image file directory", type=str)
+    parser.add_argument(
+        "image_dir", help="Path to image file directory", type=str)
     parser.add_argument("-p", "--prefix",
                         help="Pre-fix on session and job names. Such as SLV",
                         type=str, default="")
@@ -502,11 +497,11 @@ def parse_args():
                         help="Number of worker threads",
                         type=int, default=6)
 
-
     # Parse arguments
     args = parser.parse_args()
 
     return args
+
 
 def main():
 
@@ -530,12 +525,12 @@ def main():
     auth_token = os.environ['RAPTOR_MAPS_API_TOKEN']
 
     # Option 2:
-    #auth_token = 'abcd-1234'
+    # auth_token = 'abcd-1234'
 
     # Option 3: Log user into the API
-    #email = getpass.getpass('Email: ')
-    #password = getpass.getpass()
-    #cookie, auth_token = login(BASE_URL, email, password)
+    # email = getpass.getpass('Email: ')
+    # password = getpass.getpass()
+    # cookie, auth_token = login(BASE_URL, email, password)
     ### END AUTHENTICATION ###
 
     # Get total number of files to upload
@@ -582,7 +577,9 @@ def main():
 
             total_file_counter = total_file_counter + uploader.counter
 
-        print('-- Total Files Uploaded: %s of %s' % (total_file_counter, total_n_files))
+        print('-- Total Files Uploaded: %s of %s' %
+              (total_file_counter, total_n_files))
+
 
 if __name__ == '__main__':
     main()
