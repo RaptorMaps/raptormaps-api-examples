@@ -43,9 +43,6 @@ We added a retry because python gets overeager and sends too many requests at on
 The inspections are then sorted for recency and the id of the latest is added to an array we will iterate through in part four.
 
 Last thing we do is to take the array of inspection ids and iterate over it. We use each inspection id to request the map exports files. If there are no files, the script will produce an empty zip.
-To run this script, use the following:
-
-$ get_map_extracts.py
 
 ## get_findings_for_all_farms.py
-
+Get findings is similar in structure to the map exports script. The largest difference, perhaps, is instead of printing to a list of zip files, it prints all the finding results to a csv with farm name and inspection ID as labels.

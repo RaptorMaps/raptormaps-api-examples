@@ -17,7 +17,7 @@ retry = Retry(total=5, backoff_factor=0.75)
 
 
 def get_bearer_token(client_secret, client_id):
-    url = 'https://api.raptormaps.com/oauth/token'
+    url = f'{base_url}/oauth/token'
     headers = {'content-type': 'application/json'}
     body = {
         'client_id': client_id,
@@ -40,7 +40,7 @@ headers = {'Authorization': f"Bearer {bearer_token}"}
 
 def write_findings_to_csv(findings):
     with open(file_name, 'a', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile)
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         for finding in findings:
             writer.writerow(finding)
 
