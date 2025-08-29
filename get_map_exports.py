@@ -45,15 +45,16 @@ async def get_map_extracts(inspection_id, client):
             f.write(res.content)
 
 
-async def get_all_farms():
+def get_all_farms():
     farm_ids = []
     result_list_len = 1
     i = 0
-    async with httpx.AsyncClient() as client:
+    with httpx.Client() as client:
         while result_list_len != 0:
             offset = i*100
             url = f'{base_url}/v2/solar_farms?org_id={env_vars["ORG_ID"]}&offset={offset}'
-            res = await client.get(url, headers=headers, timeout=httpx.Timeout(timeout=10, read=600.0, pool=180.0))
+            res = client.get(url, headers=headers, timeout=httpx.Timeout(
+                timeout=10, read=600.0, pool=180.0))
             if res.status_code != 200:
                 print(res.json())
                 res.raise_for_status()
@@ -83,7 +84,7 @@ async def get_latest_inspection(farm_id, client):
 async def get_new_inspection_list():
     inspection_ids = []
     transport = RetryTransport(retry=retry)
-    farm_ids = await get_all_farms()
+    farm_ids = get_all_farms()
     async with httpx.AsyncClient(transport=transport) as client:
         pending = []
         for item in farm_ids:
