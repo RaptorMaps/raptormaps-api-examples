@@ -43,3 +43,14 @@ We added a retry because python gets overeager and sends too many requests at on
 The inspections are then sorted for recency and the id of the latest is added to an array we will iterate through in part four.
 
 Last thing we do is to take the array of inspection ids and iterate over it. We use each inspection id to request the map exports files. If there are no files, the script will produce an empty zip.
+
+## get_all_findings.py
+
+This script pulls the findings data for the latest inspection for each farm. The structure is very similar to get_map_exports since they're pulling a lot of the same data - farms and inspections are the basis for both operations. The end result for this script is a single csv file with the inspection ID and the farm name appended to each line. This will enable the csv to be processed once all the data is retrieved.
+
+In table form, this looks something like this:
+
+|anomaly|anomaly_count|est_affected_dc_kw|est_affected_dc_percent|est_annual_impact_kw_h|est_annual_impact_dollars|module_count|farm_name|inspection_id|
+|-------|-------------|------------------|-----------------------|----------------------|-------------------------|------------|---------|-------------|
+|Cell|2|0.27|0.7|111.96|20.5|2|Test Farm|3|
+|Module|19|7.79|19.97|11685.0|111.25|19|1000 University|3|
