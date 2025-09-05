@@ -53,4 +53,4 @@ In table form, this looks something like this:
 |anomaly|anomaly_count|est_affected_dc_kw|est_affected_dc_percent|est_annual_impact_kw_h|est_annual_impact_dollars|module_count|farm_name|inspection_id|
 |-------|-------------|------------------|-----------------------|----------------------|-------------------------|------------|---------|-------------|
 |Cell|2|0.27|0.7|111.96|20.5|2|Test Farm|3|
-|Module|19|7.79|19.97|11685.0|111.25|19|1000 University|3|
+|Module|19|7.79|19.97|11685.0|111.25|19|Test Farm|3|
