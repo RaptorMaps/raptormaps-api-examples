@@ -14,12 +14,10 @@ __copyright__ = "Raptor Maps Inc. 2023 (c)"
 
 import json
 import os
-import sys
 
-import requests
+import httpx
 
 RM_API = 'https://api.raptormaps.com'
-RM_LEGACY_API = 'https://app-legacy.raptormaps.com'
 
 
 def main():
@@ -27,51 +25,52 @@ def main():
     # INPUTS: change these!
     solar_farm_id = 123
     object_id = 123
-    note_title = 'Test note'
-    note_description = 'Test description'
-    filepath = '/path/to/my/file/to/upload.jpg'
+    note_title = 'Test Note'
+    note_description = 'Test Description'
+    filepath = '/path/to/your/file/here.jpg'
 
     # API Authentication:
     # Set API token from environment variables
-    api_access_token = os.environ.get('RM_API_TOKEN_PROD')
+    api_access_token: str | None = os.environ.get('RM_API_TOKEN')
 
     # Set org id which can be found at https://app.raptormaps.com/account
     org_id = os.environ.get('RM_ORG_ID')
 
-    # If you do not already have an API token, this code snippet will get one
-    # See here for more info: https://docs.raptormaps.com/reference/reference-getting-started
-    if not api_access_token:
-        client_id = os.environ['RM_API_CLIENT_ID']
-        client_secret = os.environ['RM_API_CLIENT_SECRET']
-        token_endpoint = 'https://login.raptormaps.com/oauth/token'
-        token_endpoint_headers = {
-            'content-type': 'application/json'
-        }
-        token_endpoint_body = {
+    def get_bearer_token(client_secret, client_id):
+        url = f'{RM_API}/oauth/token'
+        headers = {'content-type': 'application/json'}
+        body = {
             'client_id': client_id,
             'client_secret': client_secret,
-            'grant_type': 'client_credentials',
-            'audience': 'api://customer-api.v2'
-        }
+            'audience': 'api://customer-api'}
 
-        token_response = requests.post(
-            token_endpoint,
-            headers=token_endpoint_headers,
-            data=json.dumps(token_endpoint_body))
+        token_response = httpx.post(
+            url,
+            headers=headers,
+            data=json.dumps(body))
 
         response_data = token_response.json()
+        if token_response.status_code == 200:
+            return response_data.get('access_token')
+        else:
+            raise Exception(
+                f"Error getting bearer token: {response_data}")
 
-        api_access_token = response_data.get('access_token')
+    # If you do not already have an API token, this code snippet will get one using the function above.
+    # The access token will be temporarily set in the environment.
+    # See here for more info: https://docs.raptormaps.com/reference/reference-getting-started
+    if not api_access_token:
+        client_id = os.environ['RM_CLIENT_ID']
+        client_secret = os.environ['RM_CLIENT_SECRET']
+        api_access_token = get_bearer_token(client_secret, client_id)
 
-        print(
-            f'Store this secret api token in your env variables: {api_access_token}')
-        sys.exit()
+        os.environ['RM_API_TOKEN'] = api_access_token
 
     # Get information about the file to upload
     filename = os.path.basename(filepath)
     filesize = os.path.getsize(filepath)  # in bytes
 
-    # Setup header for API requests
+    # Setup header for the API calls
     headers = {
         'Authorization': f'Bearer {api_access_token}',
         'Content-Type': 'application/json'
@@ -83,7 +82,7 @@ def main():
         "title": note_title,
         "body": note_description
     }
-    note_resp = requests.post(
+    note_resp = httpx.post(
         url=note_endpoint,
         headers=headers,
         data=json.dumps(note_payload)
@@ -94,11 +93,11 @@ def main():
     # If you do not want to upload a file, you can stop here
 
     # Create upload session for file
-    upload_session_endpoint = f'{RM_LEGACY_API}/api/v2/feature_upload_session?org_id={org_id}'
+    upload_session_endpoint = f'{RM_API}/v2/feature_upload_session?org_id={org_id}'
     upload_session_payload = {
         'file_total': 1
     }
-    upload_session_resp = requests.post(
+    upload_session_resp = httpx.post(
         url=upload_session_endpoint,
         headers=headers,
         data=json.dumps(upload_session_payload)
@@ -107,13 +106,13 @@ def main():
     upload_session_id = upload_session.get('upload_session').get('id')
 
     # Create cloud storage location for file upload
-    s3_link_endpoint = f'{RM_LEGACY_API}/api/v2/feature_upload_session/s3_link?org_id={org_id}'
+    s3_link_endpoint = f'{RM_API}/v2/feature_upload_session/s3_link?org_id={org_id}'
     s3_link_payload = {
         "upload_session_id": upload_session_id,
         "filename": filename,
         "filesize": filesize
     }
-    s3_link_resp = requests.post(
+    s3_link_resp = httpx.post(
         url=s3_link_endpoint,
         headers=headers,
         data=json.dumps(s3_link_payload)
@@ -125,7 +124,7 @@ def main():
     # Upload file to cloud storage
     with open(filepath, 'rb') as f:
         files = {'file': (filename, f)}
-        s3_post_resp = requests.post(
+        s3_post_resp = httpx.post(
             url=s3_post['url'],
             data=s3_post['fields'],
             files=files
@@ -141,7 +140,7 @@ def main():
             "file_name": filename
         }]
     }
-    note_files_resp = requests.post(
+    note_files_resp = httpx.post(
         url=note_files_endpoint,
         headers=headers,
         data=json.dumps(note_files_payload)
