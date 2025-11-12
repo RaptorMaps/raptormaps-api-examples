@@ -42,7 +42,7 @@ def main():
         body = {
             'client_id': client_id,
             'client_secret': client_secret,
-            'audience': 'api://customer-api.qa'}
+            'audience': 'api://customer-api'}
 
         token_response = httpx.post(
             url,
@@ -54,7 +54,7 @@ def main():
             return response_data.get('access_token')
         else:
             raise Exception(
-                f"Error getting bearer token: {response_data, token_response.url}")
+                f"Error getting bearer token: {response_data}")
 
     # If you do not already have an API token, this code snippet will get one using the function above.
     # The access token will be temporarily set in the environment.
