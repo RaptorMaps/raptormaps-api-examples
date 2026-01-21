@@ -82,7 +82,7 @@ token: str = get_bearer_token()
 def get_anomaly_data(inspection_id):
     headers = {'Authorization': f'Bearer {token}'}
     anomalies = httpx.get(
-        f'{base_url}/v2/solar_inspections/{inspection_id}/anomalies?org_id={org_id}',
+        f'{base_url}/v2/solar_inspections/{inspection_id}/anomalies?org_id={org_id}&include_tags=9612, 9603, 9604',
         headers=headers
     )
 
