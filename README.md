@@ -54,3 +54,11 @@ In table form, this looks something like this:
 |-------|-------------|------------------|-----------------------|----------------------|-------------------------|------------|---------|-------------|
 |Cell|2|0.27|0.7|111.96|20.5|2|Test Farm|3|
 |Module|19|7.79|19.97|11685.0|111.25|19|Test Farm|3|
+
+## Create Anomaly CSV
+
+This script pulls unfiltered anomaly data and writes it into a CSV. All the anomaly information is added to each row. The advantage of this script over the CSV export is that it pulls the most recent data. 
+
+## Create Filtered Anomaly CSV
+
+This script introduces two new concepts to the previous script. First we filter the anomaly response. This is especially important for larger farms. If the request to the anomaly endpoint is timing out, then filtering is the answer. The second change is the headers for the CSV. We introduce a mapping to take information from the anomaly payload and write to a specific set of headers in our file. This kind of post-request filtering helps pull data directly from Raptor Maps into a system like Power BI.
