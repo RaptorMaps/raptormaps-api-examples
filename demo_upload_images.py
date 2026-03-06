@@ -12,7 +12,7 @@ drone inspection imagery and trigger processing:
     3. Get AWS Credentials    — GET  /v2/upload_session/{id}/aws_credentials
     4. Upload Images to S3    — boto3 s3.upload_file() using the scoped credentials
     5. Trigger Ingestion      — POST /v2/upload_sessions/{id}/ingest
-    6. Poll Ingestion Status  — GET  /v2/upload_session/{id}/status
+    6. Poll Ingestion Status  — GET  /v2/upload_session/{id}/status (optional)
 
 Prerequisites
 ─────────────
@@ -39,21 +39,20 @@ USAGE:
     pip install requests boto3
 
     # 2. Set your credentials:
-    export RM_API_CLIENT_ID="your_client_id"
-    export RM_API_CLIENT_SECRET="your_client_secret"
-    export RM_ORG_ID="12345"
+    export RM_API_CLIENT_ID="<your_client_id>"
+    export RM_API_CLIENT_SECRET="<your_client_secret>"
+    export RM_ORG_ID="<your_org_id>"
 
     # 3. Run the script:
     python demo_upload_images.py --image-dir /path/to/images
 
     # Or pass everything inline:
-    RM_API_CLIENT_ID=xxx RM_API_CLIENT_SECRET=yyy RM_ORG_ID=123 \\
-        python demo_upload_images.py --image-dir ./sample_images
+    RM_API_CLIENT_ID=<your_client_id> RM_API_CLIENT_SECRET=<your_client_secret> RM_ORG_ID=<your_org_id> \\
+        python demo_upload_images.py --image-dir ./my_images
 
     # Additional options:
     python demo_upload_images.py \\
         --image-dir /path/to/images \\
-        --base-url https://api.raptormaps.com \\
         --poll-interval 30 \\
         --poll-timeout 1800
 """
@@ -74,7 +73,8 @@ import requests
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
-AUTH_URL = "https://api.raptormaps.com/oauth/token"
+BASE_URL = "https://api.raptormaps.com"
+AUTH_URL = f"{BASE_URL}/oauth/token"
 AUTH_AUDIENCE = "api://customer-api"
 
 # Image file extensions we'll upload (case-insensitive)
@@ -121,13 +121,13 @@ def get_api_token(client_id: str, client_secret: str) -> str:
 
     Endpoint
     --------
-    POST https://api.raptormaps.com/oauth/token
+    POST {BASE_URL}/oauth/token
 
     Body
     ----
     {
-        "client_id":     "<RM_API_CLIENT_ID>",
-        "client_secret": "<RM_API_CLIENT_SECRET>",
+        "client_id":     "<your_client_id>",
+        "client_secret": "<your_client_secret>",
         "audience":      "api://customer-api"
     }
 
@@ -168,7 +168,6 @@ def get_api_token(client_id: str, client_secret: str) -> str:
 
 
 def create_upload_session(
-    base_url: str,
     token: str,
     org_id: int,
     file_total: int,
@@ -201,7 +200,7 @@ def create_upload_session(
     """
     print("\n=== Step 2: Create Upload Session ===")
 
-    endpoint = f"{base_url}/v2/upload_session"
+    endpoint = f"{BASE_URL}/v2/upload_session"
     body: dict = {
         "file_total": file_total,
         "is_image_upload": True,
@@ -240,7 +239,6 @@ def create_upload_session(
 
 
 def get_aws_credentials(
-    base_url: str,
     token: str,
     org_id: int,
     upload_session_id: int,
@@ -258,12 +256,12 @@ def get_aws_credentials(
     Response (AwsCredentialsResponse)
     ---------------------------------
     {
-        "access_key_id":     "ASIA...",
-        "secret_access_key": "...",
-        "session_token":     "...",
-        "bucket":            "my-ingestion-bucket",
-        "prefix":            "12b93d0f/456/original/",
-        "expiration":        "2026-03-05T19:00:00+00:00"
+        "access_key_id":     "<temporary_access_key>",
+        "secret_access_key": "<temporary_secret_key>",
+        "session_token":     "<temporary_session_token>",
+        "bucket":            "<s3_bucket_name>",
+        "prefix":            "<upload_prefix>/",
+        "expiration":        "<iso8601_expiration>"
     }
 
     Returns
@@ -272,7 +270,7 @@ def get_aws_credentials(
     """
     print("\n=== Step 3: Get AWS Credentials ===")
 
-    endpoint = f"{base_url}/v2/upload_session/{upload_session_id}/aws_credentials"
+    endpoint = f"{BASE_URL}/v2/upload_session/{upload_session_id}/aws_credentials"
 
     response = requests.get(
         endpoint,
@@ -345,7 +343,6 @@ def upload_images(
 
 
 def trigger_ingestion(
-    base_url: str,
     token: str,
     org_id: int,
     upload_session_id: int,
@@ -362,7 +359,7 @@ def trigger_ingestion(
 
     Response (IngestResponse)
     -------------------------
-    { "ingestion_start_date": "2026-03-05T12:00:00Z" }
+    { "ingestion_start_date": "<iso8601_datetime>" }
 
     Returns
     -------
@@ -370,7 +367,7 @@ def trigger_ingestion(
     """
     print("\n=== Step 5: Trigger Ingestion ===")
 
-    endpoint = f"{base_url}/v2/upload_sessions/{upload_session_id}/ingest"
+    endpoint = f"{BASE_URL}/v2/upload_sessions/{upload_session_id}/ingest"
 
     response = requests.post(
         endpoint,
@@ -394,7 +391,6 @@ def trigger_ingestion(
 
 
 def poll_status(
-    base_url: str,
     token: str,
     org_id: int,
     upload_session_id: int,
@@ -429,7 +425,7 @@ def poll_status(
     """
     print("\n=== Step 6: Poll Ingestion Status ===")
 
-    endpoint = f"{base_url}/v2/upload_session/{upload_session_id}/status"
+    endpoint = f"{BASE_URL}/v2/upload_session/{upload_session_id}/status"
     elapsed = 0
 
     while elapsed < poll_timeout:
@@ -493,8 +489,8 @@ def main() -> int:
             "  RM_ORG_ID              Raptor Maps organization ID\n"
             "\n"
             "Example:\n"
-            "  RM_API_CLIENT_ID=xxx RM_API_CLIENT_SECRET=yyy RM_ORG_ID=123 \\\n"
-            "    python demo_upload_images.py --image-dir ./my_images\n"
+            "  RM_API_CLIENT_ID=<your_client_id> RM_API_CLIENT_SECRET=<your_client_secret> \\\n"
+            "    RM_ORG_ID=<your_org_id> python demo_upload_images.py --image-dir ./my_images\n"
         ),
     )
     parser.add_argument(
@@ -502,12 +498,6 @@ def main() -> int:
         type=str,
         required=True,
         help="Path to directory containing images to upload",
-    )
-    parser.add_argument(
-        "--base-url",
-        type=str,
-        default="https://api.raptormaps.com",
-        help="Raptor Maps API base URL (default: https://api.raptormaps.com)",
     )
     parser.add_argument(
         "--session-name",
@@ -572,7 +562,6 @@ def main() -> int:
     # ── Print run summary ─────────────────────────────────────────────────
     print("🚀 Raptor Maps — Image Upload Flow")
     print("=" * 55)
-    print(f"   Base URL    : {args.base_url}")
     print(f"   Org ID      : {org_id}")
     print(f"   Image Dir   : {image_dir}")
     print(f"   Images Found: {len(image_files)}")
@@ -588,7 +577,6 @@ def main() -> int:
 
         # Step 2: Create Upload Session
         upload_session = create_upload_session(
-            base_url=args.base_url,
             token=token,
             org_id=org_id,
             file_total=len(image_files),
@@ -599,7 +587,6 @@ def main() -> int:
 
         # Step 3: Get AWS Credentials (the new endpoint!)
         creds = get_aws_credentials(
-            base_url=args.base_url,
             token=token,
             org_id=org_id,
             upload_session_id=upload_session_id,
@@ -617,7 +604,6 @@ def main() -> int:
 
         # Step 5: Trigger Ingestion
         trigger_ingestion(
-            base_url=args.base_url,
             token=token,
             org_id=org_id,
             upload_session_id=upload_session_id,
@@ -625,7 +611,6 @@ def main() -> int:
 
         # Step 6: Poll Ingestion Status
         poll_status(
-            base_url=args.base_url,
             token=token,
             org_id=org_id,
             upload_session_id=upload_session_id,
