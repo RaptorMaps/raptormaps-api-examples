@@ -158,7 +158,7 @@ def get_api_token(client_id: str, client_secret: str) -> str:
     if not token:
         raise RuntimeError("Authentication succeeded but no access_token in response")
 
-    print(f"✅ Authenticated successfully (token starts with {token[:12]}...)")
+    print(f"Authenticated successfully (token starts with {token[:12]}...)")
     return token
 
 
@@ -223,7 +223,7 @@ def create_upload_session(
     session_id = upload_session.get("id")
     session_url = upload_session.get("url")
 
-    print("✅ Upload session created")
+    print("Upload session created")
     print(f"   Session ID : {session_id}")
     print(f"   URL / Key  : {session_url}")
     print(f"   File Total : {file_total}")
@@ -282,7 +282,7 @@ def get_aws_credentials(
 
     creds = response.json()
 
-    print("✅ Received scoped AWS credentials")
+    print("Received scoped AWS credentials")
     print(f"   Bucket     : {creds['bucket']}")
     print(f"   Prefix     : {creds['prefix']}")
     print(f"   Expires    : {creds['expiration']}")
@@ -334,7 +334,7 @@ def upload_images(
         print(f"   Uploading {idx}/{total}: {file_path.name} → s3://{bucket}/{s3_key}")
         s3_client.upload_file(str(file_path), bucket, s3_key)
 
-    print(f"✅ All {total} images uploaded successfully")
+    print(f"All {total} images uploaded successfully")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -381,7 +381,7 @@ def trigger_ingestion(
     data = response.json()
     start_date = data.get("ingestion_start_date", "unknown")
 
-    print(f"✅ Ingestion started at {start_date}")
+    print(f"Ingestion started at {start_date}")
     return start_date
 
 
@@ -454,9 +454,9 @@ def poll_status(
         )
 
         if status_code == 0:
-            print("✅ Ingestion complete!")
+            print("Ingestion complete!")
             if errors:
-                print(f"   ⚠️  {len(errors)} error(s) occurred during processing:")
+                print(f"   WARNING: {len(errors)} error(s) occurred during processing:")
                 for err in errors[:5]:  # Show first 5
                     print(f"      - {err}")
             return data
@@ -464,7 +464,7 @@ def poll_status(
         time.sleep(poll_interval)
         elapsed += poll_interval
 
-    print(f"⏰ Timed out after {poll_timeout}s — ingestion is still in progress.")
+    print(f"Timed out after {poll_timeout}s — ingestion is still in progress.")
     print(
         "   You can re-run the status check later or view progress in the Raptor App."
     )
@@ -539,7 +539,7 @@ def main() -> int:
     if not org_id_str:
         missing.append("RM_ORG_ID")
     if missing:
-        print(f"❌ Missing required environment variable(s): {', '.join(missing)}")
+        print(f"ERROR: Missing required environment variable(s): {', '.join(missing)}")
         print(
             "   See --help or https://docs.raptormaps.com/reference/reference-getting-started"
         )
@@ -550,17 +550,17 @@ def main() -> int:
     # ── Discover image files ──────────────────────────────────────────────
     image_dir = Path(args.image_dir).resolve()
     if not image_dir.is_dir():
-        print(f"❌ Image directory does not exist: {image_dir}")
+        print(f"ERROR: Image directory does not exist: {image_dir}")
         return 1
 
     image_files = _collect_image_files(image_dir)
     if not image_files:
-        print(f"❌ No image files found in {image_dir}")
+        print(f"ERROR: No image files found in {image_dir}")
         print(f"   Supported extensions: {', '.join(sorted(IMAGE_EXTENSIONS))}")
         return 1
 
     # ── Print run summary ─────────────────────────────────────────────────
-    print("🚀 Raptor Maps — Image Upload Flow")
+    print("Raptor Maps — Image Upload Flow")
     print("=" * 55)
     print(f"   Org ID      : {org_id}")
     print(f"   Image Dir   : {image_dir}")
@@ -619,17 +619,17 @@ def main() -> int:
         )
 
         print("\n" + "=" * 55)
-        print("🎉 Upload flow completed!")
+        print("Upload flow completed!")
         print("   View your data at https://app.raptormaps.com")
 
     except KeyboardInterrupt:
-        print("\n\n⚠️  Interrupted by user")
+        print("\n\nWARNING: Interrupted by user")
         return 130
     except RuntimeError as e:
-        print(f"\n❌ {e}")
+        print(f"\nERROR: {e}")
         return 1
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\nERROR: Unexpected error: {e}")
         return 1
 
     return 0

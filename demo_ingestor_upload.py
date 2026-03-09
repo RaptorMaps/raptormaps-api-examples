@@ -169,7 +169,7 @@ def get_api_token(client_id: str, client_secret: str) -> str:
     if not token:
         raise RuntimeError("Authentication succeeded but no access_token in response")
 
-    print(f"✅ Authenticated successfully (token starts with {token[:12]}...)")
+    print(f"Authenticated successfully (token starts with {token[:12]}...)")
     return token
 
 
@@ -233,7 +233,7 @@ def create_ingestor_upload_session(
 
     if len(data_urls) > MAX_URLS_PER_REQUEST:
         print(
-            f"   ⚠️  {len(data_urls)} URLs exceeds the recommended maximum of "
+            f"   WARNING: {len(data_urls)} URLs exceeds the recommended maximum of "
             f"{MAX_URLS_PER_REQUEST} per request."
         )
         print("   Sending in batches...")
@@ -269,7 +269,7 @@ def create_ingestor_upload_session(
                 f"session {session_id}"
             )
 
-    print("✅ Ingestor upload session created")
+    print("Ingestor upload session created")
     print(f"   Session ID   : {result.get('upload_session_id')}")
     print(f"   Session UUID : {result.get('upload_session_uuid', 'N/A')}")
     print(f"   Order ID     : {order_id}")
@@ -360,7 +360,7 @@ def main() -> int:
     if not org_id_str:
         missing.append("RM_ORG_ID")
     if missing:
-        print(f"❌ Missing required environment variable(s): {', '.join(missing)}")
+        print(f"ERROR: Missing required environment variable(s): {', '.join(missing)}")
         print(
             "   See --help or https://docs.raptormaps.com/reference/reference-getting-started"
         )
@@ -370,10 +370,10 @@ def main() -> int:
 
     # ── Load signed URLs ─────────────────────────────────────────────────
     if args.urls_file:
-        print(f"📂 Loading signed URLs from {args.urls_file} ...")
+        print(f"Loading signed URLs from {args.urls_file} ...")
         signed_urls = load_urls_from_file(args.urls_file)
         if not signed_urls:
-            print(f"❌ No URLs found in {args.urls_file}")
+            print(f"ERROR: No URLs found in {args.urls_file}")
             print("   The file should contain one signed URL per line.")
             return 1
     else:
@@ -382,7 +382,7 @@ def main() -> int:
     print(f"   Loaded {len(signed_urls)} signed URL(s)")
 
     # ── Print run summary ─────────────────────────────────────────────────
-    print("\n🚀 Raptor Maps — Ingestor Upload Flow")
+    print("\nRaptor Maps — Ingestor Upload Flow")
     print("=" * 55)
     print(f"   Org ID        : {org_id}")
     print(f"   Signed URLs   : {len(signed_urls)}")
@@ -406,17 +406,17 @@ def main() -> int:
         )
 
         print("\n" + "=" * 55)
-        print("🎉 Ingestor upload session created successfully!")
+        print("Ingestor upload session created successfully!")
         print(f"   Session ID : {result.get('upload_session_id')}")
 
     except KeyboardInterrupt:
-        print("\n\n⚠️  Interrupted by user")
+        print("\n\nWARNING: Interrupted by user")
         return 130
     except RuntimeError as e:
-        print(f"\n❌ {e}")
+        print(f"\nERROR: {e}")
         return 1
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\nERROR: Unexpected error: {e}")
         return 1
 
     return 0
