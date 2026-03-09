@@ -3,7 +3,7 @@
 """
 Ingestor Upload Flow Demo — Raptor Maps API
 
-Demonstrates the customer-facing upload flow where images already reside in your
+Demonstrates facing upload flow where images already reside in your
 own cloud storage.  Instead of uploading files directly, you provide Raptor Maps
 with a list of presigned/signed URLs and the platform pulls the images itself.
 

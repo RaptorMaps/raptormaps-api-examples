@@ -3,9 +3,9 @@
 """
 Image Upload Flow Demo — Raptor Maps API
 
-Demonstrates the complete customer-facing image upload flow using the Raptor Maps
-public API. This script walks through every step a customer needs to upload
-drone inspection imagery and trigger processing:
+Demonstrates the complete image upload flow using the Raptor Maps
+public API. This script walks through every step needed to upload
+imagery and trigger processing:
 
     1. Authenticate           — POST /oauth/token  → get a JWT access token
     2. Create Upload Session  — POST /v2/upload_session
@@ -186,11 +186,11 @@ def create_upload_session(
         "file_total":       <int>,    // number of files you intend to upload
         "is_image_upload":  true,     // signals that this is a drone-image upload
         "name":             <str>,    // optional human-readable label
-        "order_id":         <int>     // optional — link this upload to an existing order
+        "order_id":         <int>     // link this upload to an existing order
     }
 
     When ``order_id`` is provided the server validates that the authenticated
-    user has permission on the order and resolves the organisation from the
+    user has permission on the order and resolves the organization from the
     order's channel.  This is useful when uploading imagery for a specific
     inspection order.
 
@@ -244,10 +244,6 @@ def get_aws_credentials(
     upload_session_id: int,
 ) -> dict:
     """Fetch scoped, temporary AWS credentials for uploading to S3.
-
-    This is the *new* credential-vending endpoint.  It returns short-lived STS
-    credentials that only allow ``s3:PutObject`` on the specific S3 prefix
-    assigned to this upload session.
 
     Endpoint
     --------
@@ -347,7 +343,7 @@ def trigger_ingestion(
     org_id: int,
     upload_session_id: int,
 ) -> str:
-    """Tell Raptor Maps to begin processing the uploaded images.
+    """Begin processing the uploaded images.
 
     Endpoint
     --------
