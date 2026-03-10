@@ -78,7 +78,7 @@ AUTH_URL = f"{BASE_URL}/oauth/token"
 AUTH_AUDIENCE = "api://customer-api"
 
 # Image file extensions we'll upload (case-insensitive)
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png", ".dng"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────

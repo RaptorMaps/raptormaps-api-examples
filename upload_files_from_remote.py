@@ -184,7 +184,6 @@ def create_ingestor_upload_session(
     order_id: int,
     data_urls: list[str],
     session_name: str,
-    pipeline: str = "om",
 ) -> dict:
     """Create an ingestor upload session with a list of signed URLs.
 
@@ -201,8 +200,7 @@ def create_ingestor_upload_session(
     {
         "upload_session_name": "<session_name>",
         "order_id":            <order_id>,
-        "data_url":            ["<signed_url_1>", "<signed_url_2>"],
-        "pipeline":            "om"      // "om" (Operations & Maintenance) or "epc"
+        "data_url":            ["<signed_url_1>", "<signed_url_2>"]
     }
 
     Response (CreateIngestorUploadSessionResponse)
@@ -215,11 +213,10 @@ def create_ingestor_upload_session(
     Parameters
     ----------
     token        : Bearer JWT.
-    org_id       : Your organisation ID.
+    org_id       : Your organization ID.
     order_id     : Order to associate this upload with.
     data_urls    : List of signed URLs for the images.
     session_name : Human-readable label for the upload session.
-    pipeline     : ``"om"`` or ``"epc"`` (default ``"om"``).
 
     Returns
     -------
@@ -248,7 +245,6 @@ def create_ingestor_upload_session(
             "upload_session_name": session_name,
             "order_id": order_id,
             "data_url": batch,
-            "pipeline": pipeline,
         }
 
         response = requests.post(
@@ -274,7 +270,6 @@ def create_ingestor_upload_session(
     print(f"   Session UUID : {result.get('upload_session_uuid', 'N/A')}")
     print(f"   Order ID     : {order_id}")
     print(f"   Total URLs   : {len(data_urls)}")
-    print(f"   Pipeline     : {pipeline}")
 
     return result
 
@@ -334,17 +329,6 @@ def main() -> int:
         required=True,
         help="Human-readable name for the upload session",
     )
-    parser.add_argument(
-        "--pipeline",
-        type=str,
-        default="om",
-        choices=["om", "epc"],
-        help=(
-            "Processing pipeline: 'om' (Operations & Maintenance) "
-            "or 'epc' (Engineering, Procurement & Construction). Default: om"
-        ),
-    )
-
     args = parser.parse_args()
 
     # ── Read environment variables ────────────────────────────────────────
@@ -366,7 +350,7 @@ def main() -> int:
         )
         return 1
 
-    org_id = int(org_id_str)  # type: ignore[arg-type]
+    org_id = int(org_id_str)  
 
     # ── Load signed URLs ─────────────────────────────────────────────────
     if args.urls_file:
@@ -388,7 +372,6 @@ def main() -> int:
     print(f"   Signed URLs   : {len(signed_urls)}")
     print(f"   Order ID      : {args.order_id}")
     print(f"   Session Name  : {args.session_name}")
-    print(f"   Pipeline      : {args.pipeline}")
     print("=" * 55)
 
     try:
@@ -402,7 +385,6 @@ def main() -> int:
             order_id=args.order_id,
             data_urls=signed_urls,
             session_name=args.session_name,
-            pipeline=args.pipeline,
         )
 
         print("\n" + "=" * 55)
