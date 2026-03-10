@@ -9,6 +9,7 @@ with a list of presigned/signed URLs and the platform pulls the images itself.
 
     1. Authenticate                   — POST /oauth/token  → get a JWT access token
     2. Create Ingestor Upload Session — POST /v2/ingestor/upload_sessions (sends the URL list)
+    3. Write Session IDs              — Save upload session IDs to a text file
 
 You are responsible for generating the signed URLs yourself before running this
 script.  Any cloud storage provider that supports signed/presigned URLs will
@@ -220,7 +221,8 @@ def create_ingestor_upload_session(
 
     Returns
     -------
-    dict — Response containing ``upload_session_id`` (and optionally ``upload_session_uuid``).
+    list[dict] — List of response dicts, each containing ``upload_session_id``
+    (and optionally ``upload_session_uuid``).  One entry per batch.
 
     Reference: https://docs.raptormaps.com/reference/apiv2ingestorupload_sessions
     """
@@ -236,7 +238,7 @@ def create_ingestor_upload_session(
         print("   Sending in batches...")
 
     # Send in batches if needed
-    result: dict = {}
+    results: list[dict] = []
     for batch_start in range(0, len(data_urls), MAX_URLS_PER_REQUEST):
         batch = data_urls[batch_start : batch_start + MAX_URLS_PER_REQUEST]
         batch_num = (batch_start // MAX_URLS_PER_REQUEST) + 1
@@ -257,6 +259,7 @@ def create_ingestor_upload_session(
         _raise_for_status(response, f"Create Ingestor Upload Session (batch {batch_num})")
 
         result = response.json()
+        results.append(result)
         session_id = result.get("upload_session_id")
 
         if len(data_urls) > MAX_URLS_PER_REQUEST:
@@ -266,12 +269,42 @@ def create_ingestor_upload_session(
             )
 
     print("Ingestor upload session created")
-    print(f"   Session ID   : {result.get('upload_session_id')}")
-    print(f"   Session UUID : {result.get('upload_session_uuid', 'N/A')}")
+    for r in results:
+        print(f"   Session ID   : {r.get('upload_session_id')}")
+        print(f"   Session UUID : {r.get('upload_session_uuid', 'N/A')}")
     print(f"   Order ID     : {order_id}")
     print(f"   Total URLs   : {len(data_urls)}")
 
-    return result
+    return results
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Step 3: Write Session IDs to File
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def write_session_ids(
+    results: list[dict],
+    output_file: str,
+) -> None:
+    """Write upload session IDs to a text file (one per line).
+
+    Parameters
+    ----------
+    results     : List of response dicts from ``create_ingestor_upload_session``.
+    output_file : Path to the output text file.
+    """
+    print("\n=== Step 3: Write Session IDs ===")
+
+    with open(output_file, "w") as f:
+        for r in results:
+            session_id = r.get("upload_session_id")
+            if session_id is not None:
+                f.write(f"{session_id}\n")
+
+    ids = [str(r.get("upload_session_id")) for r in results if r.get("upload_session_id") is not None]
+    print(f"Wrote {len(ids)} session ID(s) to {output_file}")
+    print(f"   IDs: {', '.join(ids)}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -329,6 +362,12 @@ def main() -> int:
         required=True,
         help="Human-readable name for the upload session",
     )
+    parser.add_argument(
+        "--output-file",
+        type=str,
+        default="upload_session_ids.txt",
+        help="Path to write upload session IDs (default: upload_session_ids.txt)",
+    )
     args = parser.parse_args()
 
     # ── Read environment variables ────────────────────────────────────────
@@ -379,7 +418,7 @@ def main() -> int:
         token = get_api_token(client_id, client_secret)  # type: ignore[arg-type]
 
         # Step 2: Create Ingestor Upload Session (sends signed URLs to Raptor Maps)
-        result = create_ingestor_upload_session(
+        results = create_ingestor_upload_session(
             token=token,
             org_id=org_id,
             order_id=args.order_id,
@@ -387,9 +426,13 @@ def main() -> int:
             session_name=args.session_name,
         )
 
+        # Step 3: Write session IDs to file
+        write_session_ids(results, args.output_file)
+
         print("\n" + "=" * 55)
         print("Ingestor upload session created successfully!")
-        print(f"   Session ID : {result.get('upload_session_id')}")
+        for r in results:
+            print(f"   Session ID : {r.get('upload_session_id')}")
 
     except KeyboardInterrupt:
         print("\n\nWARNING: Interrupted by user")

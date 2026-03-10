@@ -10,7 +10,7 @@ imagery and trigger processing:
     1. Authenticate           — POST /oauth/token  → get a JWT access token
     2. Create Upload Session  — POST /v2/upload_session
     3. Get AWS Credentials    — GET  /v2/upload_session/{id}/aws_credentials
-    4. Upload Images to S3    — boto3 s3.upload_file() using the scoped credentials
+    4. Upload Images to S3    — concurrent uploads via asyncio + boto3
     5. Trigger Ingestion      — POST /v2/upload_sessions/{id}/ingest
     6. Poll Ingestion Status  — GET  /v2/upload_session/{id}/status (optional)
 
@@ -54,12 +54,14 @@ USAGE:
     python upload_files_from_local.py \\
         --image-dir /path/to/images \\
         --poll-interval 30 \\
-        --poll-timeout 1800
+        --poll-timeout 1800 \\
+        --order-id <your_order_id> \\
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -291,6 +293,21 @@ def get_aws_credentials(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+async def _upload_one(
+    s3_client,
+    file_path: Path,
+    bucket: str,
+    s3_key: str,
+    idx: int,
+    total: int,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    """Upload a single file inside a concurrency-limited semaphore."""
+    async with semaphore:
+        print(f"   Uploading {idx}/{total}: {file_path.name} -> s3://{bucket}/{s3_key}")
+        await asyncio.to_thread(s3_client.upload_file, str(file_path), bucket, s3_key)
+
+
 def upload_images(
     image_files: list[Path],
     bucket: str,
@@ -298,13 +315,18 @@ def upload_images(
     access_key_id: str,
     secret_access_key: str,
     session_token: str,
+    max_concurrency: int = 10,
 ) -> None:
-    """Upload local image files directly to S3 using scoped STS credentials.
+    """Upload local image files to S3 concurrently using asyncio.
 
     Creates a boto3 S3 client from the temporary credentials returned by
     ``get_aws_credentials`` and uploads each file to::
 
         s3://{bucket}/{prefix}{filename}
+
+    Files are uploaded concurrently (up to *max_concurrency* at a time)
+    using ``asyncio.to_thread`` so that multiple S3 PutObject calls run
+    in parallel.
 
     Parameters
     ----------
@@ -314,8 +336,10 @@ def upload_images(
     access_key_id     : Temporary AWS access key ID.
     secret_access_key : Temporary AWS secret access key.
     session_token     : Temporary AWS session token.
+    max_concurrency   : Maximum number of parallel uploads (default 10).
     """
     print("\n=== Step 4: Upload Images to S3 ===")
+    print(f"   Max concurrency: {max_concurrency}")
 
     session = boto3.Session(
         aws_access_key_id=access_key_id,
@@ -325,10 +349,16 @@ def upload_images(
     s3_client = session.client("s3")
 
     total = len(image_files)
-    for idx, file_path in enumerate(image_files, start=1):
-        s3_key = f"{prefix}{file_path.name}"
-        print(f"   Uploading {idx}/{total}: {file_path.name} → s3://{bucket}/{s3_key}")
-        s3_client.upload_file(str(file_path), bucket, s3_key)
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def _upload_all() -> None:
+        tasks = [
+            _upload_one(s3_client, fp, bucket, f"{prefix}{fp.name}", idx, total, semaphore)
+            for idx, fp in enumerate(image_files, start=1)
+        ]
+        await asyncio.gather(*tasks)
+
+    asyncio.run(_upload_all())
 
     print(f"All {total} images uploaded successfully")
 
@@ -508,6 +538,12 @@ def main() -> int:
         help="Optional order ID to associate this upload with an existing order",
     )
     parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=6,
+        help="Maximum number of parallel S3 uploads (default: 10)",
+    )
+    parser.add_argument(
         "--poll-interval",
         type=int,
         default=30,
@@ -588,7 +624,7 @@ def main() -> int:
             upload_session_id=upload_session_id,
         )
 
-        # Step 4: Upload Images to S3
+        # Step 4: Upload Images to S3 (concurrent via asyncio)
         upload_images(
             image_files=image_files,
             bucket=creds["bucket"],
@@ -596,6 +632,7 @@ def main() -> int:
             access_key_id=creds["access_key_id"],
             secret_access_key=creds["secret_access_key"],
             session_token=creds["session_token"],
+            max_concurrency=args.max_concurrency,
         )
 
         # Step 5: Trigger Ingestion
