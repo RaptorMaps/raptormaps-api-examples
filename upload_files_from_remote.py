@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Ingestor Upload Flow Demo — Raptor Maps API
+Ingestor Upload Flow — Raptor Maps API
 
 Demonstrates facing upload flow where images already reside in your
 own cloud storage.  Instead of uploading files directly, you provide Raptor Maps
@@ -53,13 +53,13 @@ USAGE:
     #        https://your-bucket.s3.amazonaws.com/image002.jpg?<signature_params>
 
     # 4. Run the script:
-    python demo_ingestor_upload.py \\
+    python upload_files_from_remote.py \\
         --urls-file urls.txt \\
         --order-id <your_order_id> \\
         --session-name "My Upload Session"
 
     # Or pass URLs directly on the command line:
-    python demo_ingestor_upload.py \\
+    python upload_files_from_remote.py \\
         --urls \\
             "https://your-bucket.s3.amazonaws.com/image001.jpg?<signature_params>" \\
             "https://your-bucket.s3.amazonaws.com/image002.jpg?<signature_params>" \\
@@ -283,7 +283,7 @@ def main() -> int:
     """Orchestrate the ingestor upload flow."""
 
     parser = argparse.ArgumentParser(
-        description="Raptor Maps — Ingestor Upload Flow Demo (signed URLs)",
+        description="Raptor Maps — Ingestor Upload Flow emo (signed URLs)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Environment variables required:\n"

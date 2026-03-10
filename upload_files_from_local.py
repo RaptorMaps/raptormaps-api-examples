@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 """
-Image Upload Flow Demo — Raptor Maps API
+Image Upload Flow — Raptor Maps API
 
 Demonstrates the complete image upload flow using the Raptor Maps
 public API. This script walks through every step needed to upload
@@ -44,14 +44,14 @@ USAGE:
     export RM_ORG_ID="<your_org_id>"
 
     # 3. Run the script:
-    python demo_upload_images.py --image-dir /path/to/images
+    python upload_files_from_local.py --image-dir /path/to/images
 
     # Or pass everything inline:
     RM_API_CLIENT_ID=<your_client_id> RM_API_CLIENT_SECRET=<your_client_secret> RM_ORG_ID=<your_org_id> \\
-        python demo_upload_images.py --image-dir ./my_images
+        python upload_files_from_local.py --image-dir ./my_images
 
     # Additional options:
-    python demo_upload_images.py \\
+    python upload_files_from_local.py \\
         --image-dir /path/to/images \\
         --poll-interval 30 \\
         --poll-timeout 1800
