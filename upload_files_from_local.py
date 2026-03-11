@@ -44,18 +44,18 @@ USAGE:
     export RM_ORG_ID="<your_org_id>"
 
     # 3. Run the script:
-    python upload_files_from_local.py --image-dir /path/to/images
+    python upload_files_from_local.py --image-dir /path/to/images --order-id <your_order_id>
 
     # Or pass everything inline:
     RM_API_CLIENT_ID=<your_client_id> RM_API_CLIENT_SECRET=<your_client_secret> RM_ORG_ID=<your_org_id> \\
-        python upload_files_from_local.py --image-dir ./my_images
+        python upload_files_from_local.py --image-dir ./my_images --order-id <your_order_id>
 
     # Additional options:
     python upload_files_from_local.py \\
         --image-dir /path/to/images \\
-        --poll-interval 30 \\
-        --poll-timeout 1800 \\
         --order-id <your_order_id> \\
+        --poll-interval 30 \\
+        --poll-timeout 1800
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ AUTH_URL = f"{BASE_URL}/oauth/token"
 AUTH_AUDIENCE = "api://customer-api"
 
 # Image file extensions we'll upload (case-insensitive)
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".tif", ".tiff", ".png"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -173,8 +173,8 @@ def create_upload_session(
     token: str,
     org_id: int,
     file_total: int,
+    order_id: int,
     name: str | None = None,
-    order_id: int | None = None,
 ) -> dict:
     """Create an upload session for the given org.
 
@@ -191,10 +191,8 @@ def create_upload_session(
         "order_id":         <int>     // link this upload to an existing order
     }
 
-    When ``order_id`` is provided the server validates that the authenticated
-    user has permission on the order and resolves the organization from the
-    order's channel.  This is useful when uploading imagery for a specific
-    inspection order.
+    The server validates that the authenticated user has permission on the
+    order and resolves the organization from the order's channel.
 
     Returns
     -------
@@ -209,8 +207,7 @@ def create_upload_session(
     }
     if name:
         body["name"] = name
-    if order_id is not None:
-        body["order_id"] = order_id
+    body["order_id"] = order_id
 
     response = requests.post(
         endpoint,
@@ -229,8 +226,7 @@ def create_upload_session(
     print(f"   Session ID : {session_id}")
     print(f"   URL / Key  : {session_url}")
     print(f"   File Total : {file_total}")
-    if order_id is not None:
-        print(f"   Order ID   : {order_id}")
+    print(f"   Order ID   : {order_id}")
 
     return upload_session
 
@@ -534,8 +530,8 @@ def main() -> int:
     parser.add_argument(
         "--order-id",
         type=int,
-        default=None,
-        help="Optional order ID to associate this upload with an existing order",
+        required=True,
+        help="Order ID to associate this upload with an existing order",
     )
     parser.add_argument(
         "--max-concurrency",
@@ -599,8 +595,7 @@ def main() -> int:
     print(f"   Images Found: {len(image_files)}")
     if args.session_name:
         print(f"   Session Name: {args.session_name}")
-    if args.order_id:
-        print(f"   Order ID    : {args.order_id}")
+    print(f"   Order ID    : {args.order_id}")
     print("=" * 55)
 
     try:
