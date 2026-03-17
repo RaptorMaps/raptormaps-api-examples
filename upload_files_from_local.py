@@ -1,585 +1,667 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
-"""upload_files.py: A working example of how to uploads files using the
-Raptor Maps API.
+"""
+Image Upload Flow — Raptor Maps API
 
-This script assumes the directory you choose to upload has solar sites
-as the first subdirectory.
+Demonstrates the complete image upload flow using the Raptor Maps
+public API. This script walks through every step needed to upload
+imagery and trigger processing:
 
-An Upload Request is created for each solar site, and Upload Sessions
-are added to each Upload Request. This script uses a multi-threaded
-approach within each Upload Session.
+    1. Authenticate           — POST /oauth/token  → get a JWT access token
+    2. Create Upload Session  — POST /v2/upload_session
+    3. Get AWS Credentials    — GET  /v2/upload_session/{id}/aws_credentials
+    4. Upload Images to S3    — concurrent uploads via asyncio + boto3
+    5. Trigger Ingestion      — POST /v2/upload_sessions/{id}/ingest
+    6. Poll Ingestion Status  — GET  /v2/upload_session/{id}/status (optional)
 
-Args:
-    org_id (int): Your Raptor App org id", type=int)
-    image_dir (str): Path to image file directory
-    -p, --prefix (str): Optional prefix on each upload session name.
-    -n, --n_workers (int): Optional number or worker threads for uploading 
-        default=6
-    -h (flag): Help flag to display params
+Prerequisites
+─────────────
+    • Python 3.10+
+    • pip install requests boto3
+    • Raptor Maps API credentials (client ID & secret)
+      → Create at https://app.raptormaps.com/account  (see "API Credentials")
+    • Your Organization ID (visible on the same Profile page)
 
-Example:
+Environment Variables
+─────────────────────
+    RM_API_CLIENT_ID      Your Raptor Maps API client ID
+    RM_API_CLIENT_SECRET   Your Raptor Maps API client secret
+    RM_ORG_ID              Your Raptor Maps organization ID
 
-> python upload_files.py /Users/username/images -n 6
+Reference Docs
+──────────────
+    Getting Started          https://docs.raptormaps.com/reference/reference-getting-started
+    Authentication           https://docs.raptormaps.com/reference/get-api-access-token
+    Upload Session Status    https://docs.raptormaps.com/reference/apiv2upload_sessionupload_session_idstatus
 
-If the following directory structure was used
+USAGE:
+    # 1. Install dependencies:
+    pip install requests boto3
 
--- images
-    -- site_name_1
-        -- YYYY-MM-DD
-            -- high_fly
-               -- IMG_0001.jpg
-            -- module_scan
-               -- 100MEDIA
-                  -- IMG_0001.jpg
-                  -- ...
-                   -- IMG_0999.jpg
-               -- 101MEDIA
-                   -- IMG_0001.jpg
-                   -- ...
-                   -- IMG_0999.jpg
-            -- pads_poi
-                -- IMG_0001.jpg
-    -- site_name_2
-        -- YYYY-MM-DD
-            -- high_fly
-            -- module_scan
-               -- 100MEDIA
-               -- 101MEDIA
-            -- pads_poi
+    # 2. Set your credentials:
+    export RM_API_CLIENT_ID="<your_client_id>"
+    export RM_API_CLIENT_SECRET="<your_client_secret>"
+    export RM_ORG_ID="<your_org_id>"
 
-This script would create 2 upload requests: one for site 1 and one for site 2.
-It would then create 5 upload sessions for site 1 and 4 for site 2.
+    # 3. Run the script:
+    python upload_files_from_local.py --image-dir /path/to/images --order-id <your_order_id>
 
-Modification:
-It is best practice to create one Upload Request per solar site. See main(), but
-get_solar_site_dirs() and get_upload_session_dirs() can be modified if needed.
+    # Or pass everything inline:
+    RM_API_CLIENT_ID=<your_client_id> RM_API_CLIENT_SECRET=<your_client_secret> RM_ORG_ID=<your_org_id> \\
+        python upload_files_from_local.py --image-dir ./my_images --order-id <your_order_id>
+
+    # Additional options:
+    python upload_files_from_local.py \\
+        --image-dir /path/to/images \\
+        --order-id <your_order_id> \\
+        --poll-interval 30 \\
+        --poll-timeout 1800
 """
 
-__copyright__ = "Raptor Maps Inc. 2025 (c)"
+from __future__ import annotations
 
 import argparse
-import concurrent.futures
-import glob
+import asyncio
 import json
 import os
+import sys
 import time
+from pathlib import Path
 
+import boto3
 import requests
 
-BASE_URL = "https://app.raptormaps.com"
-env_vars = os.getenv()
+# ──────────────────────────────────────────────────────────────────────────────
+# Constants
+# ──────────────────────────────────────────────────────────────────────────────
+
+BASE_URL = "https://api.raptormaps.com"
+AUTH_URL = f"{BASE_URL}/oauth/token"
+AUTH_AUDIENCE = "api://customer-api"
+
+# Image file extensions we'll upload (case-insensitive)
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
 
-def get_bearer_token(client_secret, client_id):
-    url = 'https://api.raptormaps.com/oauth/token'
-    headers = {'content-type': 'application/json'}
-    body = {
-        'client_id': client_id,
-        'client_secret': client_secret,
-        'audience': 'api://customer-api'}
-
-    token_response = httpx.post(
-        url,
-        headers=headers,
-        data=json.dumps(body))
-
-    response_data = token_response.json()
-    return response_data.get('access_token')
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
 
 
-class UploadRequest(object):
-    """UploadRequest class handles creating an upload request with the
-    Raptor Maps API and uploading files to AWS S3
+def _headers(token: str) -> dict[str, str]:
+    """Return standard request headers with Bearer auth."""
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+    }
+
+
+def _collect_image_files(directory: Path) -> list[Path]:
+    """Return a sorted list of image files in *directory* (non-recursive)."""
+    files = [
+        f
+        for f in sorted(directory.iterdir())
+        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+    ]
+    return files
+
+
+def _raise_for_status(response: requests.Response, step_name: str) -> None:
+    """Raise a clear error if the response is not 2xx."""
+    if not response.ok:
+        detail = response.text[:500] if response.text else "(no body)"
+        raise RuntimeError(f"[{step_name}] HTTP {response.status_code}: {detail}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Step 1: Get API JWT
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def get_api_token(client_id: str, client_secret: str) -> str:
+    """Authenticate with Raptor Maps OAuth and return a JWT access token.
+
+    Endpoint
+    --------
+    POST {BASE_URL}/oauth/token
+
+    Body
+    ----
+    {
+        "client_id":     "<your_client_id>",
+        "client_secret": "<your_client_secret>",
+        "audience":      "api://customer-api"
+    }
+
+    Returns
+    -------
+    str — The access token (JWT) used as a Bearer token for all subsequent calls.
+
+    Reference: https://docs.raptormaps.com/reference/get-api-access-token
     """
+    print("=== Step 1: Authenticate (Get API JWT) ===")
 
-    def __init__(self, org_id, name, auth_token):
-        """Constructor
-        org_id (int): your Org's ID
-        name (str): name of upload request
-        auth_token (str): Raptor Maps API auth token
-        """
-        self.org_id = org_id
-        self.name = name
+    payload = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "audience": AUTH_AUDIENCE,
+    }
 
-        # API request headers
-        self.headers = {
-            'content-type': 'application/json',
-            'Authentication-Token': auth_token}
+    response = requests.post(
+        AUTH_URL,
+        headers={"Content-Type": "application/json"},
+        data=json.dumps(payload),
+        timeout=30,
+    )
+    _raise_for_status(response, "Authentication")
 
-    def create(self):
-        # First create an upload request
-        endpoint = "/api/v2/upload_requests"
-        url = BASE_URL + endpoint
+    data = response.json()
+    token = data.get("access_token")
+    if not token:
+        raise RuntimeError("Authentication succeeded but no access_token in response")
 
-        payload = {
-            'org_id': self.org_id,
-            'name': self.name
-        }
-
-        # POST
-        r = requests.post(url, data=json.dumps(payload), headers=self.headers)
-
-        data = r.json()
-
-        # Get the access token for the upload request
-        access_token = get_bearer_token(
-            env_vars['CLIENT_SECRET'], env_vars['CLIENT_ID'])
-
-        return access_token
+    print(f"Authenticated successfully (token starts with {token[:12]}...)")
+    return token
 
 
-class UploadSession(object):
-    """UploadSession class handles creating an upload session with the
-    Raptor Maps API and uploading files to AWS S3
+# ──────────────────────────────────────────────────────────────────────────────
+# Step 2: Create Upload Session
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def create_upload_session(
+    token: str,
+    org_id: int,
+    file_total: int,
+    order_id: int,
+    name: str | None = None,
+) -> dict:
+    """Create an upload session for the given org.
+
+    Endpoint
+    --------
+    POST {base_url}/v2/upload_session?org_id={org_id}
+
+    Body (CreateUploadSessionRequest)
+    ---------------------------------
+    {
+        "file_total":       <int>,    // number of files you intend to upload
+        "is_image_upload":  true,     // signals that this is a drone-image upload
+        "name":             <str>,    // optional human-readable label
+        "order_id":         <int>     // link this upload to an existing order
+    }
+
+    The server validates that the authenticated user has permission on the
+    order and resolves the organization from the order's channel.
+
+    Returns
+    -------
+    dict — The full upload_session object, including ``id`` and ``url``.
     """
+    print("\n=== Step 2: Create Upload Session ===")
 
-    def __init__(
-            self, file_dir, session_name, org_id, access_token, n_workers=6):
-        """Constructor.
-        Args:
-            file_dir (str): local directory path where images are stored to be
-                uploaded
-            session_name (str): name of upload session
-            org_id (int): your org's ID
-            cookie (str): authentication token
-            n_workers (int): number of threads to use when uploading, default=6
-        """
+    endpoint = f"{BASE_URL}/v2/upload_session"
+    body: dict = {
+        "file_total": file_total,
+        "is_image_upload": True,
+    }
+    if name:
+        body["name"] = name
+    body["order_id"] = order_id
 
-        self.file_dir = file_dir
-        self.filepaths = self.get_filepaths(file_dir)
-        self.session_name = session_name
-        self.org_id = org_id
-        self.access_token = access_token
-        self.n_workers = n_workers
+    response = requests.post(
+        endpoint,
+        headers=_headers(token),
+        params={"org_id": org_id},
+        data=json.dumps(body),
+        timeout=30,
+    )
+    _raise_for_status(response, "Create Upload Session")
 
-        # total file count for upload session
-        self.total_file_count = len(self.filepaths)
+    upload_session = response.json().get("upload_session", {})
+    session_id = upload_session.get("id")
+    session_url = upload_session.get("url")
 
-        # API request headers
-        self.headers = {
-            'content-type': 'application/json'
-        }
+    print("Upload session created")
+    print(f"   Session ID : {session_id}")
+    print(f"   URL / Key  : {session_url}")
+    print(f"   File Total : {file_total}")
+    print(f"   Order ID   : {order_id}")
 
-        # Initialize variables
-        self.upload_session_id = None
-        self.counter = 0
-
-    @staticmethod
-    def get_filepaths(file_dir):
-        """Generic method to gets a list of filepaths from a file directory
-
-        Args:
-            file_dir (str) a path to a file directory
-
-        Returns:
-            [str]. a list of filepaths for each file
-
-        """
-
-        # Accepted file extensions
-        accepted_exts = ['jpg', 'jpeg', 'tif', 'tiff']
-
-        filepaths = []
-
-        # Find files with accepted file extensions
-        for e in accepted_exts:
-            filepaths.extend(glob.glob(os.path.join(
-                file_dir, '*.%s' % e)))
-
-            # Also look for files with uppercase extension like JPG
-            filepaths.extend(glob.glob(os.path.join(
-                file_dir, '*.%s' % e.upper())))
-
-        # Sort files
-        filepaths.sort()
-
-        return filepaths
-
-    @staticmethod
-    def get_total_files_in_dir(file_dir):
-        """Gets total number of files in a directory
-        Args:
-            file_dir (str): file directory
-        Returns:
-            total number of files (int)
-        """
-        # Get count of all files recursively in all subdirectories
-        total_files = 0
-        for root, d_names, f_names in os.walk(file_dir):
-            total_files += len(UploadSession.get_filepaths(root))
-
-        return total_files
-
-    def upload_file(self, filepath):
-        """Uploads one file.
-        First it asks the API for where to place the file on S3, then it uploads
-        the file to S3. It then triggers the Raptor Maps system to ingest the
-        file and peform post processing
-        """
-
-        # Determine filename from filepath
-        filename = os.path.basename(filepath)
-
-        # Get AWS S3 post url so we can upload directly to S3
-        endpoint = "/api/v2/token/%s/get_s3_post_link" % (self.access_token)
-        url = BASE_URL + endpoint
-
-        payload = {
-            'upload_session_id': self.upload_session_id,
-            'filename': filename
-        }
-
-        # POST
-        r = requests.post(url, data=json.dumps(payload), headers=self.headers)
-
-        # parse response
-        data = r.json()
-
-        if int(data['exit_status']) == 0:
-            post = data['post']
-        else:
-            raise
-
-        # Upload file directly to s3
-        try:
-            self.post_file_to_s3(filepath, post)
-        except ConnectionError as e:
-            print('ConnectionError:', e)
-            return
-
-        # Initialize data ingestion for this file
-        endpoint = "/api/v2/token/%s/upload_file" % (self.access_token)
-        url = BASE_URL + endpoint
-
-        s3_url = post['fields']['key']
-
-        payload = {
-            'upload_session_id': self.upload_session_id,
-            's3_url': s3_url,
-            'data_type': 'image'  # or geotiff
-        }
-
-        # POST
-        r = requests.post(url, data=json.dumps(payload), headers=self.headers)
-
-        print('------ Session %s: %s of %s: %s' % (
-            self.upload_session_id, self.counter+1, self.total_file_count,
-            os.path.basename(filepath)))
-
-        self.counter += 1
-
-    def post_file_to_s3(self, filepath, post, retry_period=10, retry_duration=7200):
-        """Uploads a single file to AWS S3. If the post is unsuccessful
-        it will retry every 10 seconds for 2 hours
-
-        Args:
-            filepath (str): filepath
-            post (dict): post dictionary from S3 {url: (str), fields: dict}
-            retry_period: number of seconds to wait before each rety
-            retry_duration: total length of time to keep retrying (in seconds)
-
-        Raises:
-            ConnectionError
-        """
-
-        # Parse fields
-        url = post['url']
-        fields = post['fields']
-
-        # Open file io
-        files = {'file': open(filepath, 'rb')}
-
-        # Attempt to upload file bytes
-        for attempt in range(retry_duration):
-            try:
-                r_s3 = requests.post(url, data=fields, files=files)
-            except:
-                print('...Trying to get to S3...')
-                time.sleep(retry_period)
-            else:
-                break
-        else:
-            # Loop never hit break, i.e the request never went
-            # through
-            raise ConnectionError('ERROR: Skipping file: %s' % (f))
-
-    def upload_files(self):
-        """Uploads many files using multi-threading by calling upload_file
-        """
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.n_workers) as executor:
-            # Start the load operations and mark each future with its URL
-            future_to_url = {
-                executor.submit(
-                    self.upload_file, x): x for x in self.filepaths}
-
-            for future in concurrent.futures.as_completed(future_to_url):
-                url = future_to_url[future]  # object originally passed
-                data = future.result()  # get data from function
-
-    def create_upload_session(self):
-        """Creates an upload session in Raptor Maps API
-        First creates an upload session request for each upload session.
-        The upload request contains a token to use for subsequent API calls
-        """
-
-        # Create Upload Session
-        endpoint = "/api/v2/token/%s/upload_sessions" % (self.access_token)
-        url = BASE_URL + endpoint
-
-        payload = {
-            'file_total': len(self.filepaths),
-            'name': self.session_name,
-        }
-
-        # POST
-        r = requests.post(url, data=json.dumps(payload), headers=self.headers)
-
-        # Make two attempts to create an upload session
-        try:
-            data = r.json()
-        except ValueError:
-            r = requests.post(url, data=json.dumps(
-                payload), headers=self.headers)
-            data = r.json()
-
-        # Sets the session id
-        self.upload_session_id = data['upload_session']['id']
-
-    def run(self):
-        """Convenience function to create upload session in Raptor Maps system
-        and upload files to it
-        """
-        print('---- Uploading: %s' % self.session_name)
-        self.create_upload_session()
-        self.upload_files()
+    return upload_session
 
 
-def get_solar_site_dirs(file_dir):
-    """Gets all solar site directories
+# ──────────────────────────────────────────────────────────────────────────────
+# Step 3: Get AWS Credentials
+# ──────────────────────────────────────────────────────────────────────────────
 
-    Note: This can be customized to suit your needs
 
-    Args:
+def get_aws_credentials(
+    token: str,
+    org_id: int,
+    upload_session_id: int,
+) -> dict:
+    """Fetch scoped, temporary AWS credentials for uploading to S3.
 
-        file_dir (str): path to a directory contain subdirectories
-            that are solar sites
+    Endpoint
+    --------
+    GET {base_url}/v2/upload_session/{upload_session_id}/aws_credentials?org_id={org_id}
 
-    Returns:
-        site_dirs ([str]): list of solar site file directories
-        site_names ([site_names]): list of solar site names
-            extracted from file paths
+    Response (AwsCredentialsResponse)
+    ---------------------------------
+    {
+        "access_key_id":     "<temporary_access_key>",
+        "secret_access_key": "<temporary_secret_key>",
+        "session_token":     "<temporary_session_token>",
+        "bucket":            "<s3_bucket_name>",
+        "prefix":            "<upload_prefix>/",
+        "expiration":        "<iso8601_expiration>"
+    }
 
-    Example:
-        Assuming file directory is
-            /User/username/solar_farms/
-                solar_farm_a/
-                solar_farm_b/
-
-        > get_solar_site_dirs('/User/username/solar_farms/')
-        ['/User/username/solar_farms/solar_farm_a',
-         '/User/username/solar_farms/solar_farm_b'],
-        ['solar_farm_a', 'solar_farm_b']
+    Returns
+    -------
+    dict — The credentials payload.
     """
+    print("\n=== Step 3: Get AWS Credentials ===")
 
-    site_dirs = []
-    site_names = []
+    endpoint = f"{BASE_URL}/v2/upload_session/{upload_session_id}/aws_credentials"
 
-    for x in next(os.walk(file_dir))[1]:
-        site_names.append(x)
-        site_dirs.append(os.path.join(file_dir, x))
+    response = requests.get(
+        endpoint,
+        headers=_headers(token),
+        params={"org_id": org_id},
+        timeout=30,
+    )
+    _raise_for_status(response, "Get AWS Credentials")
 
-    # To be safe, make sure the number of directories matches the number
-    # of site names
-    assert len(site_dirs) == len(site_names)
+    creds = response.json()
 
-    # Also check that all filepaths exist
-    for site_dir in site_dirs:
-        if not os.path.exists(site_dir):
-            raise OSError(site_dir, 'does not exist')
+    print("Received scoped AWS credentials")
+    print(f"   Bucket     : {creds['bucket']}")
+    print(f"   Prefix     : {creds['prefix']}")
+    print(f"   Expires    : {creds['expiration']}")
 
-    return site_dirs, site_names
+    return creds
 
 
-def get_upload_session_dirs(image_dir, prefix=''):
-    """Takes a directory that contains images or images within subdirectories
-    and determines upload session directories and upload session names.
+# ──────────────────────────────────────────────────────────────────────────────
+# Step 4: Upload Images to S3
+# ──────────────────────────────────────────────────────────────────────────────
 
-    Note: This can be customized to suit your needs
 
-    Args:
-        image_dir (str): path to directory containing images or subdirectories
-            of images. e.g. '/Users/username/Downloads/images'
-        prefix (str): text to append to front of upload session names.
-            e.g. 'ABC'
+async def _upload_one(
+    s3_client,
+    file_path: Path,
+    bucket: str,
+    s3_key: str,
+    idx: int,
+    total: int,
+    semaphore: asyncio.Semaphore,
+) -> None:
+    """Upload a single file inside a concurrency-limited semaphore."""
+    async with semaphore:
+        print(f"   Uploading {idx}/{total}: {file_path.name} -> s3://{bucket}/{s3_key}")
+        await asyncio.to_thread(s3_client.upload_file, str(file_path), bucket, s3_key)
 
-    Returns:
-        file_dirs ([str]): a list of file directories for each upload session
-        session_names ([str]): a list of upload session names
 
-    Example:
-        image_dir = '/Users/username/Downloads/images'
-        prefix = 'ABC'
-        where the subdirectory structure looks like:
-            images/
-            -- high_flys/
-                IMG_0001.JPG
-                IMG_0002.JPG
-            - module_scans/
-                MEDIA01/
-                    IMG_0003.JPG
-                    IMG_0004.JPG
+def upload_images(
+    image_files: list[Path],
+    bucket: str,
+    prefix: str,
+    access_key_id: str,
+    secret_access_key: str,
+    session_token: str,
+    max_concurrency: int = 10,
+) -> None:
+    """Upload local image files to S3 concurrently using asyncio.
 
-        Call: get_upload_session_dirs('/Users/username/Downloads/images', 'ABC')
-        Returns:
-          file_dirs: ['/Users/username/Downloads/images/high_flys']
-            '/Users/username/Downloads/images/module_scans/MEDIA01'],
-          session_names: ['ABC - high_flys', 'ABC - module_scans/MEDIA01'],
-          total_file_countr: 4
+    Creates a boto3 S3 client from the temporary credentials returned by
+    ``get_aws_credentials`` and uploads each file to::
 
+        s3://{bucket}/{prefix}{filename}
+
+    Files are uploaded concurrently (up to *max_concurrency* at a time)
+    using ``asyncio.to_thread`` so that multiple S3 PutObject calls run
+    in parallel.
+
+    Parameters
+    ----------
+    image_files       : List of local file paths to upload.
+    bucket            : S3 bucket name (from AwsCredentialsResponse).
+    prefix            : S3 key prefix (from AwsCredentialsResponse).
+    access_key_id     : Temporary AWS access key ID.
+    secret_access_key : Temporary AWS secret access key.
+    session_token     : Temporary AWS session token.
+    max_concurrency   : Maximum number of parallel uploads (default 10).
     """
+    print("\n=== Step 4: Upload Images to S3 ===")
+    print(f"   Max concurrency: {max_concurrency}")
 
-    file_dirs = []
-    session_names = []
-    total_file_count = 0
+    session = boto3.Session(
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        aws_session_token=session_token,
+    )
+    s3_client = session.client("s3")
 
-    # Recursively traverse the entire directory and flatten the lowest folders
-    # into upload session names
-    for root, d_names, f_names in os.walk(image_dir):
+    total = len(image_files)
+    semaphore = asyncio.Semaphore(max_concurrency)
 
-        filepaths = UploadSession.get_filepaths(root)
+    async def _upload_all() -> None:
+        tasks = [
+            _upload_one(s3_client, fp, bucket, f"{prefix}{fp.name}", idx, total, semaphore)
+            for idx, fp in enumerate(image_files, start=1)
+        ]
+        await asyncio.gather(*tasks)
 
-        # If there are some files make an upload session
-        if len(filepaths) > 0:
+    asyncio.run(_upload_all())
 
-            file_dirs.append(root)
-
-            # Determine session name. If no subdirectories are found
-            # just use the folder name
-            if root == image_dir:
-                session_name = os.path.basename(root)
-            else:
-                session_name = os.path.relpath(root, image_dir)
-
-            if prefix.strip() != "":
-                session_name = '%s - %s' % (prefix, session_name)
-
-            session_names.append(session_name)
-
-            total_file_count += len(filepaths)
-
-    # To be safe, make sure the number of file directories matches the number
-    # of upload session names
-    assert len(file_dirs) == len(session_names)
-
-    # Also check that all filepaths exist
-    for file_dir in file_dirs:
-        if not os.path.exists(file_dir):
-            raise OSError(file_dir, 'does not exist')
-
-    return file_dirs, session_names, total_file_count
+    print(f"All {total} images uploaded successfully")
 
 
-def parse_args():
-    # Create argument parser
-    parser = argparse.ArgumentParser()
+# ──────────────────────────────────────────────────────────────────────────────
+# Step 5: Trigger Ingestion
+# ──────────────────────────────────────────────────────────────────────────────
 
-    # positional mandatory arguments
-    parser.add_argument("org_id", help="Your Raptor App org id", type=int)
+
+def trigger_ingestion(
+    token: str,
+    org_id: int,
+    upload_session_id: int,
+) -> str:
+    """Begin processing the uploaded images.
+
+    Endpoint
+    --------
+    POST {base_url}/v2/upload_sessions/{upload_session_id}/ingest?org_id={org_id}
+
+    Body (UploadSessionIngestRequest)
+    ---------------------------------
+    {}   (all fields are optional)
+
+    Response (IngestResponse)
+    -------------------------
+    { "ingestion_start_date": "<iso8601_datetime>" }
+
+    Returns
+    -------
+    str — The ingestion start date string.
+    """
+    print("\n=== Step 5: Trigger Ingestion ===")
+
+    endpoint = f"{BASE_URL}/v2/upload_sessions/{upload_session_id}/ingest"
+
+    response = requests.post(
+        endpoint,
+        headers=_headers(token),
+        params={"org_id": org_id},
+        data=json.dumps({}),
+        timeout=30,
+    )
+    _raise_for_status(response, "Trigger Ingestion")
+
+    data = response.json()
+    start_date = data.get("ingestion_start_date", "unknown")
+
+    print(f"Ingestion started at {start_date}")
+    return start_date
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Step 6: Poll Ingestion Status
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def poll_status(
+    token: str,
+    org_id: int,
+    upload_session_id: int,
+    poll_interval: int = 30,
+    poll_timeout: int = 1800,
+) -> dict:
+    """Poll the upload session status until ingestion is complete or timeout.
+
+    Endpoint
+    --------
+    GET {base_url}/v2/upload_session/{upload_session_id}/status?org_id={org_id}
+
+    Response Fields
+    ───────────────
+    upload_session_status : int — 0 = complete, 1 = in progress
+    n_images              : int — number of RGB images processed
+    n_thermal_images      : int — number of radiometric thermal images processed
+    n_tile_maps           : int — number of tile maps generated
+    errors                : list — any processing errors
+    file_total            : int — total files expected
+
+    Parameters
+    ----------
+    poll_interval : Seconds between status checks (default 30).
+    poll_timeout  : Maximum seconds to wait before giving up (default 1800 = 30 min).
+
+    Returns
+    -------
+    dict — The final status response.
+
+    Reference: https://docs.raptormaps.com/reference/apiv2upload_sessionupload_session_idstatus
+    """
+    print("\n=== Step 6: Poll Ingestion Status ===")
+
+    endpoint = f"{BASE_URL}/v2/upload_session/{upload_session_id}/status"
+    elapsed = 0
+
+    while elapsed < poll_timeout:
+        response = requests.get(
+            endpoint,
+            headers=_headers(token),
+            params={"org_id": org_id},
+            timeout=30,
+        )
+        _raise_for_status(response, "Poll Status")
+
+        data = response.json()
+        status_code = data.get("upload_session_status", 1)
+        n_images = data.get("n_images", 0)
+        n_thermal = data.get("n_thermal_images", 0)
+        n_tile_maps = data.get("n_tile_maps", 0)
+        errors = data.get("errors", [])
+        file_total = data.get("file_total", "?")
+
+        processed = n_images + n_thermal + n_tile_maps
+        print(
+            f"   [{elapsed:>4}s] Status: {'COMPLETE' if status_code == 0 else 'IN PROGRESS'} "
+            f"| Processed: {processed}/{file_total} "
+            f"(RGB: {n_images}, Thermal: {n_thermal}, Tile Maps: {n_tile_maps}) "
+            f"| Errors: {len(errors)}"
+        )
+
+        if status_code == 0:
+            print("Ingestion complete!")
+            if errors:
+                print(f"   WARNING: {len(errors)} error(s) occurred during processing:")
+                for err in errors[:5]:  # Show first 5
+                    print(f"      - {err}")
+            return data
+
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+    print(f"Timed out after {poll_timeout}s — ingestion is still in progress.")
+    print(
+        "   You can re-run the status check later or view progress in the Raptor App."
+    )
+    return data
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Main
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def main() -> int:
+    """Orchestrate the full image upload flow."""
+
+    parser = argparse.ArgumentParser(
+        description="Raptor Maps — Full Image Upload Flow Demo",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Environment variables required:\n"
+            "  RM_API_CLIENT_ID       Raptor Maps API client ID\n"
+            "  RM_API_CLIENT_SECRET   Raptor Maps API client secret\n"
+            "  RM_ORG_ID              Raptor Maps organization ID\n"
+            "\n"
+            "Example:\n"
+            "  RM_API_CLIENT_ID=<your_client_id> RM_API_CLIENT_SECRET=<your_client_secret> \\\n"
+            "    RM_ORG_ID=<your_org_id> python demo_upload_images.py --image-dir ./my_images\n"
+        ),
+    )
     parser.add_argument(
-        "image_dir", help="Path to image file directory", type=str)
-    parser.add_argument("-p", "--prefix",
-                        help="Pre-fix on session and job names. Such as SLV",
-                        type=str, default="")
+        "--image-dir",
+        type=str,
+        required=True,
+        help="Path to directory containing images to upload",
+    )
+    parser.add_argument(
+        "--session-name",
+        type=str,
+        default=None,
+        help="Optional human-readable name for the upload session",
+    )
+    parser.add_argument(
+        "--order-id",
+        type=int,
+        required=True,
+        help="Order ID to associate this upload with an existing order",
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=6,
+        help="Maximum number of parallel S3 uploads (default: 10)",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=30,
+        help="Seconds between status polling requests (default: 30)",
+    )
+    parser.add_argument(
+        "--poll-timeout",
+        type=int,
+        default=1800,
+        help="Maximum seconds to poll before giving up (default: 1800 = 30 min)",
+    )
 
-    parser.add_argument("-n", "--n_workers",
-                        help="Number of worker threads",
-                        type=int, default=6)
-
-    # Parse arguments
     args = parser.parse_args()
 
-    return args
+    # ── Read environment variables ────────────────────────────────────────
+    client_id = os.environ.get("RM_API_CLIENT_ID")
+    client_secret = os.environ.get("RM_API_CLIENT_SECRET")
+    org_id_str = os.environ.get("RM_ORG_ID")
+
+    missing = []
+    if not client_id:
+        missing.append("RM_API_CLIENT_ID")
+    if not client_secret:
+        missing.append("RM_API_CLIENT_SECRET")
+    if not org_id_str:
+        missing.append("RM_ORG_ID")
+    if missing:
+        print(f"ERROR: Missing required environment variable(s): {', '.join(missing)}")
+        print(
+            "   See --help or https://docs.raptormaps.com/reference/reference-getting-started"
+        )
+        return 1
+
+    org_id = int(org_id_str)  # type: ignore[arg-type]
+
+    # ── Discover image files ──────────────────────────────────────────────
+    image_dir = Path(args.image_dir).resolve()
+    if not image_dir.is_dir():
+        print(f"ERROR: Image directory does not exist: {image_dir}")
+        return 1
+
+    image_files = _collect_image_files(image_dir)
+    if not image_files:
+        print(f"ERROR: No image files found in {image_dir}")
+        print(f"   Supported extensions: {', '.join(sorted(IMAGE_EXTENSIONS))}")
+        return 1
+
+    # ── Print run summary ─────────────────────────────────────────────────
+    print("Raptor Maps — Image Upload Flow")
+    print("=" * 55)
+    print(f"   Org ID      : {org_id}")
+    print(f"   Image Dir   : {image_dir}")
+    print(f"   Images Found: {len(image_files)}")
+    if args.session_name:
+        print(f"   Session Name: {args.session_name}")
+    print(f"   Order ID    : {args.order_id}")
+    print("=" * 55)
+
+    try:
+        # Step 1: Authenticate
+        token = get_api_token(client_id, client_secret)  # type: ignore[arg-type]
+
+        # Step 2: Create Upload Session
+        upload_session = create_upload_session(
+            token=token,
+            org_id=org_id,
+            file_total=len(image_files),
+            name=args.session_name,
+            order_id=args.order_id,
+        )
+        upload_session_id = upload_session["id"]
+
+        # Step 3: Get AWS Credentials (the new endpoint!)
+        creds = get_aws_credentials(
+            token=token,
+            org_id=org_id,
+            upload_session_id=upload_session_id,
+        )
+
+        # Step 4: Upload Images to S3 (concurrent via asyncio)
+        upload_images(
+            image_files=image_files,
+            bucket=creds["bucket"],
+            prefix=creds["prefix"],
+            access_key_id=creds["access_key_id"],
+            secret_access_key=creds["secret_access_key"],
+            session_token=creds["session_token"],
+            max_concurrency=args.max_concurrency,
+        )
+
+        # Step 5: Trigger Ingestion
+        trigger_ingestion(
+            token=token,
+            org_id=org_id,
+            upload_session_id=upload_session_id,
+        )
+
+        # Step 6: Poll Ingestion Status
+        poll_status(
+            token=token,
+            org_id=org_id,
+            upload_session_id=upload_session_id,
+            poll_interval=args.poll_interval,
+            poll_timeout=args.poll_timeout,
+        )
+
+        print("\n" + "=" * 55)
+        print("Upload flow completed!")
+        print("   View your data at https://app.raptormaps.com")
+
+    except KeyboardInterrupt:
+        print("\n\nWARNING: Interrupted by user")
+        return 130
+    except RuntimeError as e:
+        print(f"\nERROR: {e}")
+        return 1
+    except Exception as e:
+        print(f"\nERROR: Unexpected error: {e}")
+        return 1
+
+    return 0
 
 
-def main():
-
-    # Parse command line arguments
-    args = parse_args()
-
-    org_id = args.org_id
-    image_dir = args.image_dir
-    prefix = args.prefix
-    n_workers = args.n_workers
-
-    image_dir = os.path.normpath(image_dir)
-
-    ### Authentication ###
-    # Options:
-    # 1. Load token from environment variable (recommended)
-    # 2. Type your token into this script
-    # 3. Login using your password
-
-    # Option 1:
-    auth_token = os.environ['RAPTOR_MAPS_API_TOKEN']
-
-    # Option 2:
-    # auth_token = 'abcd-1234'
-
-    # Option 3: Log user into the API
-    # email = getpass.getpass('Email: ')
-    # password = getpass.getpass()
-    # cookie, auth_token = login(BASE_URL, email, password)
-    ### END AUTHENTICATION ###
-
-    # Get total number of files to upload
-    total_n_files = UploadSession.get_total_files_in_dir(image_dir)
-
-    # Get a list of solar sites
-    solar_site_dirs, site_names = get_solar_site_dirs(image_dir)
-
-    print("-- Total files to upload: %s" % total_n_files)
-    print("-- Total sites to upload: %s" % len(site_names))
-    print("-- Site Names:")
-
-    for s in site_names:
-        print('---- %s' % s)
-
-    total_file_counter = 0
-
-    # Loop over each solar site
-    for site_dir, site_name in zip(solar_site_dirs, site_names):
-        # Create an Upload Request for each solar site
-        print('-- Creating Upload Request for %s' % (site_name))
-        ur = UploadRequest(org_id, site_name, auth_token)
-        upload_request_token = ur.create()
-        print('-- Token: %s' % (upload_request_token))
-
-        # Prepare to make upload sessions by getting a list of file directories
-        # and associated upload session names for this solar site
-        image_dirs, session_names, site_n_files = \
-            get_upload_session_dirs(site_dir, prefix)
-
-        print("---- %s: %s files" % (site_name, site_n_files))
-        print("---- Upload Sessions:")
-        for s in session_names:
-            print("------ %s" % s)
-
-        # Loop over each upload session and upload files
-        for file_dir, session_name in zip(image_dirs, session_names):
-            # Initialize Upload Session
-            uploader = UploadSession(
-                file_dir, session_name, org_id, upload_request_token,
-                n_workers=n_workers)
-            # Upload files
-            uploader.run()
-
-            total_file_counter = total_file_counter + uploader.counter
-
-        print('-- Total Files Uploaded: %s of %s' %
-              (total_file_counter, total_n_files))
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    sys.exit(main())
