@@ -368,12 +368,13 @@ def trigger_ingestion(
     token: str,
     org_id: int,
     upload_session_id: int,
+    order_id: int,
 ) -> str:
     """Begin processing the uploaded images.
 
     Endpoint
     --------
-    POST {base_url}/v2/upload_sessions/{upload_session_id}/ingest?org_id={org_id}
+    POST {base_url}/v2/upload_sessions/{upload_session_id}/ingest?org_id={org_id}&order_id={order_id}
 
     Body (UploadSessionIngestRequest)
     ---------------------------------
@@ -394,7 +395,7 @@ def trigger_ingestion(
     response = requests.post(
         endpoint,
         headers=_headers(token),
-        params={"org_id": org_id},
+        params={"org_id": org_id, "order_id": order_id},
         data=json.dumps({}),
         timeout=30,
     )
@@ -635,6 +636,7 @@ def main() -> int:
             token=token,
             org_id=org_id,
             upload_session_id=upload_session_id,
+            order_id=args.order_id,
         )
 
         # Step 6: Poll Ingestion Status
