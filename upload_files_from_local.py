@@ -8,11 +8,12 @@ public API. This script walks through every step needed to upload
 imagery and trigger processing:
 
     1. Authenticate           — POST /oauth/token  → get a JWT access token
-    2. Create Upload Session  — POST /v2/upload_session
-    3. Get AWS Credentials    — GET  /v2/upload_session/{id}/aws_credentials
-    4. Upload Images to S3    — concurrent uploads via asyncio + boto3
-    5. Trigger Ingestion      — POST /v2/upload_sessions/{id}/ingest
-    6. Poll Ingestion Status  — GET  /v2/upload_session/{id}/status (optional)
+    2. Fetch Order            — GET  /v2/orders/{order_id}  → extract upload_request access token
+    3. Create Upload Session  — POST /v2/token/{access_token}/upload_sessions
+    4. Get AWS Credentials    — GET  /v2/token/{access_token}/upload_session/{id}/aws_credentials
+    5. Upload Images to S3    — concurrent uploads via asyncio + boto3
+    6. Trigger Ingestion      — POST /v2/token/{access_token}/ingest
+    7. Poll Ingestion Status  — GET  /v2/token/{access_token}/upload_sessions/{id}/status (optional)
 
 Prerequisites
 ─────────────
@@ -66,6 +67,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import boto3
@@ -165,54 +167,98 @@ def get_api_token(client_id: str, client_secret: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 2: Create Upload Session
+# Step 2: Fetch Order
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def get_order_access_token(token: str, org_id: int, order_id: int) -> str:
+    """Fetch an order and return the upload_request access token.
+
+    Endpoint
+    --------
+    GET {BASE_URL}/v2/orders/{order_id}?org_id={org_id}
+
+    The order response contains an ``upload_requests`` array. Each entry
+    includes an ``access_token`` object whose ``access_token`` string is
+    used to authenticate subsequent upload session calls via the token routes.
+
+    Returns
+    -------
+    str — The access token string from ``upload_requests[0].access_token.access_token``.
+    """
+    print("\n=== Step 2: Fetch Order ===")
+
+    endpoint = f"{BASE_URL}/v2/orders/{order_id}"
+
+    response = requests.get(
+        endpoint,
+        headers=_headers(token),
+        params={"org_id": org_id},
+        timeout=30,
+    )
+    _raise_for_status(response, "Fetch Order")
+
+    order = response.json()
+    upload_requests = order.get("upload_requests", [])
+    if not upload_requests:
+        raise RuntimeError(f"Order {order_id} has no upload_requests")
+
+    upload_request = upload_requests[0]
+    access_token = upload_request.get("access_token", {}).get("access_token")
+    if not access_token:
+        raise RuntimeError(f"Order {order_id} upload_request has no access_token")
+
+    print(f"Order fetched successfully")
+    print(f"   Order ID           : {order_id}")
+    print(f"   Upload Request ID  : {upload_request.get('id')}")
+    print(f"   Upload Request Name: {upload_request.get('name')}")
+    print(f"   Access Token       : {access_token[:12]}...")
+
+    return access_token
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Step 3: Create Upload Session
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def create_upload_session(
     token: str,
-    org_id: int,
+    access_token: str,
     file_total: int,
-    order_id: int,
     name: str | None = None,
 ) -> dict:
-    """Create an upload session for the given org.
+    """Create an upload session via the upload_request access token.
 
     Endpoint
     --------
-    POST {base_url}/v2/upload_session?org_id={org_id}
+    POST {BASE_URL}/v2/token/{access_token}/upload_sessions
 
     Body (CreateUploadSessionRequest)
     ---------------------------------
     {
-        "file_total":       <int>,    // number of files you intend to upload
-        "is_image_upload":  true,     // signals that this is a drone-image upload
-        "name":             <str>,    // optional human-readable label
-        "order_id":         <int>     // link this upload to an existing order
+        "file_total":      <int>,    // number of files you intend to upload
+        "is_image_upload": true,     // signals that this is a drone-image upload
+        "name":            <str>     // optional human-readable label
     }
-
-    The server validates that the authenticated user has permission on the
-    order and resolves the organization from the order's channel.
 
     Returns
     -------
     dict — The full upload_session object, including ``id`` and ``url``.
     """
-    print("\n=== Step 2: Create Upload Session ===")
+    print("\n=== Step 3: Create Upload Session ===")
 
-    endpoint = f"{BASE_URL}/v2/upload_session"
+    endpoint = f"{BASE_URL}/v2/token/{access_token}/upload_sessions"
     body: dict = {
         "file_total": file_total,
         "is_image_upload": True,
     }
     if name:
         body["name"] = name
-    body["order_id"] = order_id
 
     response = requests.post(
         endpoint,
         headers=_headers(token),
-        params={"org_id": org_id},
         data=json.dumps(body),
         timeout=30,
     )
@@ -226,26 +272,25 @@ def create_upload_session(
     print(f"   Session ID : {session_id}")
     print(f"   URL / Key  : {session_url}")
     print(f"   File Total : {file_total}")
-    print(f"   Order ID   : {order_id}")
 
     return upload_session
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 3: Get AWS Credentials
+# Step 4: Get AWS Credentials
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def get_aws_credentials(
     token: str,
-    org_id: int,
+    access_token: str,
     upload_session_id: int,
 ) -> dict:
     """Fetch scoped, temporary AWS credentials for uploading to S3.
 
     Endpoint
     --------
-    GET {base_url}/v2/upload_session/{upload_session_id}/aws_credentials?org_id={org_id}
+    GET {BASE_URL}/v2/token/{access_token}/upload_session/{upload_session_id}/aws_credentials
 
     Response (AwsCredentialsResponse)
     ---------------------------------
@@ -262,14 +307,13 @@ def get_aws_credentials(
     -------
     dict — The credentials payload.
     """
-    print("\n=== Step 3: Get AWS Credentials ===")
+    print("\n=== Step 4: Get AWS Credentials ===")
 
-    endpoint = f"{BASE_URL}/v2/upload_session/{upload_session_id}/aws_credentials"
+    endpoint = f"{BASE_URL}/v2/token/{access_token}/upload_session/{upload_session_id}/aws_credentials"
 
     response = requests.get(
         endpoint,
         headers=_headers(token),
-        params={"org_id": org_id},
         timeout=30,
     )
     _raise_for_status(response, "Get AWS Credentials")
@@ -285,7 +329,7 @@ def get_aws_credentials(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 4: Upload Images to S3
+# Step 5: Upload Images to S3
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -334,7 +378,7 @@ def upload_images(
     session_token     : Temporary AWS session token.
     max_concurrency   : Maximum number of parallel uploads (default 10).
     """
-    print("\n=== Step 4: Upload Images to S3 ===")
+    print("\n=== Step 5: Upload Images to S3 ===")
     print(f"   Max concurrency: {max_concurrency}")
 
     session = boto3.Session(
@@ -360,24 +404,28 @@ def upload_images(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 5: Trigger Ingestion
+# Step 6: Trigger Ingestion
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def trigger_ingestion(
     token: str,
-    org_id: int,
+    access_token: str,
     upload_session_id: int,
+    file_total: int,
 ) -> str:
     """Begin processing the uploaded images.
 
     Endpoint
     --------
-    POST {base_url}/v2/upload_sessions/{upload_session_id}/ingest?org_id={org_id}
+    POST {BASE_URL}/v2/token/{access_token}/ingest
 
-    Body (UploadSessionIngestRequest)
-    ---------------------------------
-    {}   (all fields are optional)
+    Body (TokenIngestRequest)
+    -------------------------
+    {
+        "upload_session_id": <int>,
+        "file_total":        <int>
+    }
 
     Response (IngestResponse)
     -------------------------
@@ -387,15 +435,17 @@ def trigger_ingestion(
     -------
     str — The ingestion start date string.
     """
-    print("\n=== Step 5: Trigger Ingestion ===")
+    print("\n=== Step 6: Trigger Ingestion ===")
 
-    endpoint = f"{BASE_URL}/v2/upload_sessions/{upload_session_id}/ingest"
+    endpoint = f"{BASE_URL}/v2/token/{access_token}/ingest"
 
     response = requests.post(
         endpoint,
         headers=_headers(token),
-        params={"org_id": org_id},
-        data=json.dumps({}),
+        data=json.dumps({
+            "upload_session_id": upload_session_id,
+            "file_total": file_total,
+        }),
         timeout=30,
     )
     _raise_for_status(response, "Trigger Ingestion")
@@ -408,12 +458,13 @@ def trigger_ingestion(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Step 6: Poll Ingestion Status
+# Step 7: Poll Ingestion Status
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def poll_status(
     token: str,
+    access_token: str,
     org_id: int,
     upload_session_id: int,
     poll_interval: int = 30,
@@ -423,7 +474,7 @@ def poll_status(
 
     Endpoint
     --------
-    GET {base_url}/v2/upload_session/{upload_session_id}/status?org_id={org_id}
+    GET {base_url}/v2/token/{access_token}/upload_sessions/{upload_session_id}/status?org_id={org_id}
 
     Response Fields
     ───────────────
@@ -445,9 +496,9 @@ def poll_status(
 
     Reference: https://docs.raptormaps.com/reference/apiv2upload_sessionupload_session_idstatus
     """
-    print("\n=== Step 6: Poll Ingestion Status ===")
+    print("\n=== Step 7: Poll Ingestion Status ===")
 
-    endpoint = f"{BASE_URL}/v2/upload_session/{upload_session_id}/status"
+    endpoint = f"{BASE_URL}/v2/token/{access_token}/upload_sessions/{upload_session_id}/status"
     elapsed = 0
 
     while elapsed < poll_timeout:
@@ -531,7 +582,7 @@ def main() -> int:
         "--order-id",
         type=int,
         required=True,
-        help="Order ID to associate this upload with an existing order",
+        help="Order ID to fetch the upload_request access token from",
     )
     parser.add_argument(
         "--max-concurrency",
@@ -587,14 +638,15 @@ def main() -> int:
         print(f"   Supported extensions: {', '.join(sorted(IMAGE_EXTENSIONS))}")
         return 1
 
+    session_name = args.session_name or f"Upload Session {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
     # ── Print run summary ─────────────────────────────────────────────────
     print("Raptor Maps — Image Upload Flow")
     print("=" * 55)
     print(f"   Org ID      : {org_id}")
     print(f"   Image Dir   : {image_dir}")
     print(f"   Images Found: {len(image_files)}")
-    if args.session_name:
-        print(f"   Session Name: {args.session_name}")
+    print(f"   Session Name: {session_name}")
     print(f"   Order ID    : {args.order_id}")
     print("=" * 55)
 
@@ -602,24 +654,30 @@ def main() -> int:
         # Step 1: Authenticate
         token = get_api_token(client_id, client_secret)  # type: ignore[arg-type]
 
-        # Step 2: Create Upload Session
-        upload_session = create_upload_session(
+        # Step 2: Fetch Order → get upload_request access token
+        upload_request_token = get_order_access_token(
             token=token,
             org_id=org_id,
-            file_total=len(image_files),
-            name=args.session_name,
             order_id=args.order_id,
+        )
+
+        # Step 3: Create Upload Session
+        upload_session = create_upload_session(
+            token=token,
+            access_token=upload_request_token,
+            file_total=len(image_files),
+            name=session_name,
         )
         upload_session_id = upload_session["id"]
 
-        # Step 3: Get AWS Credentials (the new endpoint!)
+        # Step 4: Get AWS Credentials
         creds = get_aws_credentials(
             token=token,
-            org_id=org_id,
+            access_token=upload_request_token,
             upload_session_id=upload_session_id,
         )
 
-        # Step 4: Upload Images to S3 (concurrent via asyncio)
+        # Step 5: Upload Images to S3 (concurrent via asyncio)
         upload_images(
             image_files=image_files,
             bucket=creds["bucket"],
@@ -630,16 +688,18 @@ def main() -> int:
             max_concurrency=args.max_concurrency,
         )
 
-        # Step 5: Trigger Ingestion
+        # Step 6: Trigger Ingestion
         trigger_ingestion(
             token=token,
-            org_id=org_id,
+            access_token=upload_request_token,
             upload_session_id=upload_session_id,
+            file_total=len(image_files),
         )
 
-        # Step 6: Poll Ingestion Status
+        # Step 7: Poll Ingestion Status
         poll_status(
             token=token,
+            access_token=upload_request_token,
             org_id=org_id,
             upload_session_id=upload_session_id,
             poll_interval=args.poll_interval,
