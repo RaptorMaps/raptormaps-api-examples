@@ -74,6 +74,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 import requests
 
@@ -257,6 +258,9 @@ def create_ingestor_upload_session(
             timeout=60,
         )
         _raise_for_status(response, f"Create Ingestor Upload Session (batch {batch_num})")
+        # rate limit between batches; skip sleep after the final batch
+        if batch_start + MAX_URLS_PER_REQUEST < len(data_urls):
+            time.sleep(30)
 
         result = response.json()
         results.append(result)
